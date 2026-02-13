@@ -13,16 +13,14 @@ Simple Telegram bot in Zig:
 
 ## Config File
 
-Create `zigbot.config.json` in the project root:
+Create `~/.config/zigbot/config.toml`:
 
-```json
-{
-  "telegram_bot_token": "123456:abc...",
-  "pi_executable": "pi",
-  "provider": "google",
-  "model": null,
-  "polling_timeout_seconds": 30
-}
+```toml
+telegram_bot_token = "123456:abc..."
+pi_executable = "pi"
+provider = "google"
+# Omit model to use provider defaults.
+polling_timeout_seconds = 30
 ```
 
 Required fields:
@@ -31,7 +29,7 @@ Required fields:
 Optional fields:
 - `pi_executable` (defaults to `"pi"`)
 - `provider`
-- `model`
+- `model` (omit to use provider defaults)
 - `polling_timeout_seconds` (defaults to `30`)
 
 ## Run
@@ -43,10 +41,12 @@ zig build run
 Use a custom config path:
 
 ```bash
-zig build run -- /path/to/your-config.json
+zig build run -- /path/to/config.toml
 ```
 
 ## Notes
 
 - This implementation is intentionally simple and stateless per incoming message.
 - Only plain text Telegram messages are processed.
+- Zigbot passes the config file directory to Pi as the agent directory.
+- Put optional agent instructions at `~/.config/zigbot/AGENTS.md` (or alongside a custom `config.toml` path).
