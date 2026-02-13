@@ -6,16 +6,12 @@ const agentTaskName = @import("runtime_state.zig").agentTaskName;
 
 const ui_html = @embedFile("assets/web/index.html");
 const request_body_limit_bytes = 32 * 1024;
+const request_head_timeout_seconds = 10;
 
 const ServerContext = struct {
     status: *RuntimeState,
     config: *const Config,
     config_dir: []const u8,
-};
-
-const ConnectionContext = struct {
-    server: *ServerContext,
-    connection: std.net.Server.Connection,
 };
 
 pub fn spawn(status: *RuntimeState, config: *const Config, config_dir: []const u8) !void {
@@ -68,52 +64,50 @@ fn serverMain(context: *ServerContext) void {
             std.Thread.sleep(100 * std.time.ns_per_ms);
             continue;
         };
-
-        const connection_context = allocator.create(ConnectionContext) catch {
-            std.log.err("web ui: dropping connection due to allocator pressure", .{});
-            connection.stream.close();
-            continue;
-        };
-        connection_context.* = .{
-            .server = context,
-            .connection = connection,
-        };
-
-        const connection_thread = std.Thread.spawn(.{}, connectionMain, .{connection_context}) catch |err| {
-            std.log.err("web ui: failed to spawn connection worker: {}", .{err});
-            connection_context.connection.stream.close();
-            allocator.destroy(connection_context);
-            continue;
-        };
-        connection_thread.detach();
+        connectionMain(context, connection);
     }
 }
 
-fn connectionMain(context: *ConnectionContext) void {
-    defer context.connection.stream.close();
-    defer std.heap.page_allocator.destroy(context);
+fn connectionMain(context: *ServerContext, connection: std.net.Server.Connection) void {
+    defer connection.stream.close();
+    configureConnectionTimeout(connection.stream) catch |err| {
+        std.log.err("web ui: failed configuring socket timeout: {}", .{err});
+    };
 
     var send_buffer: [4096]u8 = undefined;
     var recv_buffer: [4096]u8 = undefined;
-    var stream_reader = context.connection.stream.reader(&recv_buffer);
-    var stream_writer = context.connection.stream.writer(&send_buffer);
+    var stream_reader = connection.stream.reader(&recv_buffer);
+    var stream_writer = connection.stream.writer(&send_buffer);
     var server = std.http.Server.init(stream_reader.interface(), &stream_writer.interface);
 
-    while (true) {
-        var request = server.receiveHead() catch |err| switch (err) {
-            error.HttpConnectionClosing => return,
-            else => {
-                std.log.err("web ui: failed receiving request: {}", .{err});
-                return;
-            },
-        };
-
-        serveRequest(context.server, &request) catch |err| {
-            std.log.err("web ui: request handling failed: {}", .{err});
-            respondJsonError(&request, .internal_server_error, "internal server error") catch {};
+    var request = server.receiveHead() catch |err| switch (err) {
+        error.HttpConnectionClosing => return,
+        else => {
+            std.log.err("web ui: failed receiving request: {}", .{err});
             return;
-        };
-    }
+        },
+    };
+
+    serveRequest(context, &request) catch |err| {
+        std.log.err("web ui: request handling failed: {}", .{err});
+        respondJsonError(&request, .internal_server_error, "internal server error") catch {};
+    };
+}
+
+fn configureConnectionTimeout(stream: std.net.Stream) !void {
+    if (@import("builtin").os.tag == .windows) return;
+
+    const timeout = std.posix.timeval{
+        .sec = request_head_timeout_seconds,
+        .usec = 0,
+    };
+    const timeout_bytes = std.mem.asBytes(&timeout);
+    try std.posix.setsockopt(
+        stream.handle,
+        std.posix.SOL.SOCKET,
+        std.posix.SO.RCVTIMEO,
+        timeout_bytes,
+    );
 }
 
 fn serveRequest(context: *ServerContext, request: *std.http.Server.Request) !void {
