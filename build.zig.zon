@@ -3,8 +3,8 @@
     .version = "0.0.1",
     .dependencies = .{
         .pi_sdk_zig = .{
-            .url = "https://github.com/garymjr/pi-sdk-zig/archive/refs/tags/v0.1.0.tar.gz",
-            .hash = "pi_sdk_zig-0.0.1-16_h0tbjAAD7sGu7Qg1y9fFlFyp8lZE5m71cv-vuGJCW",
+            .url = "https://github.com/garymjr/pi-sdk-zig/archive/refs/tags/v0.2.0.tar.gz",
+            .hash = "pi_sdk_zig-0.0.1-16_h0hvkAAAdhqQOmdBzQx3pVQEwcDlghzOvjyC2IbjQ",
         },
     },
     .minimum_zig_version = "0.15.2",

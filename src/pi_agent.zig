@@ -20,8 +20,8 @@ pub fn askPi(
 
     const contextual_prompt = try std.fmt.allocPrint(
         allocator,
-        "Runtime context:\n- Config directory: {s}\n- AGENTS file path (if present): {s}/AGENTS.md\n\nUser message:\n{s}",
-        .{ config_dir, config_dir, prompt },
+        "Runtime context:\n- Config directory: {s}\n- AGENTS file path (if present): {s}/AGENTS.md\n- Skills directory (if present): {s}/skills\n\nUser message:\n{s}",
+        .{ config_dir, config_dir, config_dir, prompt },
     );
     defer allocator.free(contextual_prompt);
 

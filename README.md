@@ -50,3 +50,4 @@ zig build run -- /path/to/config.toml
 - Only plain text Telegram messages are processed.
 - Zigbot passes the config file directory to Pi as the agent directory.
 - Put optional agent instructions at `~/.config/zigbot/AGENTS.md` (or alongside a custom `config.toml` path).
+- Put optional skills in `~/.config/zigbot/skills/<skill-name>/SKILL.md` (or `<config-dir>/skills/<skill-name>/SKILL.md` when using a custom config path).
