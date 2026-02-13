@@ -13,6 +13,8 @@ const RunMode = enum {
     beat,
 };
 
+var shutdown_requested = std.atomic.Value(bool).init(false);
+
 pub fn run() !void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -80,17 +82,38 @@ pub fn run() !void {
         return;
     }
 
+    installSignalHandlers();
+    shutdown_requested.store(false, .seq_cst);
+
     var telegram = TelegramClient.init(allocator, config.telegram_bot_token);
     defer telegram.deinit();
 
     var runtime_state = RuntimeState.init();
+    var web_server: ?web.Server = null;
+
+    const web_mode: web.ServeMode = if (config.web_enabled) .full else .status_only;
+    web_server = blk: {
+        const spawned = web.spawn(
+            &runtime_state,
+            &config,
+            config_dir,
+            web_mode,
+            &shutdown_requested,
+        ) catch |err| {
+            if (config.web_enabled) {
+                std.log.err("failed starting web ui: {}", .{err});
+            } else {
+                std.log.err("failed starting status api: {}", .{err});
+            }
+            break :blk null;
+        };
+        break :blk spawned;
+    };
 
     if (config.web_enabled) {
-        web.spawn(&runtime_state, &config, config_dir) catch |err| {
-            std.log.err("failed starting web ui: {}", .{err});
-        };
+        std.log.info("web ui enabled", .{});
     } else {
-        std.log.info("web ui disabled via config", .{});
+        std.log.info("web ui disabled via config, status api remains enabled", .{});
     }
 
     std.log.info("zigbot started", .{});
@@ -99,16 +122,24 @@ pub fn run() !void {
     var next_update_offset: i64 = 0;
     var next_heartbeat_ms = initialNextHeartbeatMillis(&config);
     runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
-    while (true) {
+    while (!shutdown_requested.load(.acquire)) {
         const poll_timeout_seconds = effectivePollingTimeoutSeconds(&config, next_heartbeat_ms);
         handlePollCycle(allocator, &runtime_state, &config, config_dir, &telegram, &next_update_offset, poll_timeout_seconds) catch |err| {
+            if (shutdown_requested.load(.acquire)) break;
             runtime_state.recordPollError(err);
             std.log.err("poll loop error: {}", .{err});
+            if (shutdown_requested.load(.acquire)) break;
             std.Thread.sleep(2 * std.time.ns_per_s);
         };
 
         triggerHeartbeatIfDue(allocator, &runtime_state, &config, config_dir, &next_heartbeat_ms);
     }
+
+    std.log.info("shutdown requested, stopping zigbot", .{});
+    if (web_server) |*server| {
+        server.stopAndJoin();
+    }
+    std.log.info("zigbot stopped", .{});
 }
 
 fn defaultConfigDir(allocator: std.mem.Allocator) ![]u8 {
@@ -277,4 +308,21 @@ fn heartbeatIntervalMillis(config: *const Config) ?i64 {
 
 fn clampNonNegative(value: i64) i64 {
     return if (value < 0) 0 else value;
+}
+
+fn installSignalHandlers() void {
+    if (@import("builtin").os.tag == .windows) return;
+
+    const signal_action = std.posix.Sigaction{
+        .handler = .{ .handler = handleShutdownSignal },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+
+    std.posix.sigaction(std.posix.SIG.INT, &signal_action, null);
+    std.posix.sigaction(std.posix.SIG.TERM, &signal_action, null);
+}
+
+fn handleShutdownSignal(_: c_int) callconv(.c) void {
+    shutdown_requested.store(true, .seq_cst);
 }

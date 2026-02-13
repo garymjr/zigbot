@@ -38,7 +38,7 @@ Optional fields:
 - `model` (omit to use provider defaults)
 - `polling_timeout_seconds` (defaults to `30`)
 - `heartbeat_interval_seconds` (defaults to `300`, set `0` or a negative value to disable heartbeat runs)
-- `web_enabled` (defaults to `true`, set `false` to disable the local web UI)
+- `web_enabled` (defaults to `true`, set `false` to disable the local web UI while keeping status endpoints available)
 - `web_host` (defaults to `"127.0.0.1"`)
 - `web_port` (defaults to `8787`)
 
@@ -52,6 +52,13 @@ When enabled, the local web UI is available at:
 
 ```text
 http://127.0.0.1:8787
+```
+
+Status endpoints are always available (even when `web_enabled = false`):
+
+```text
+GET /api/status
+GET /healthz
 ```
 
 Use a custom config path:
@@ -70,6 +77,14 @@ Run a one-shot manual heartbeat with a custom config path:
 
 ```bash
 zig build run -- beat /path/to/config.toml
+```
+
+Development helpers:
+
+```bash
+zig build fmt
+zig build test
+zig build check
 ```
 
 ## Notes

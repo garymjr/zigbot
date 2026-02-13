@@ -8,32 +8,65 @@ const ui_html = @embedFile("assets/web/index.html");
 const request_body_limit_bytes = 32 * 1024;
 const request_head_timeout_seconds = 10;
 
+pub const ServeMode = enum {
+    full,
+    status_only,
+};
+
+pub const Server = struct {
+    thread: std.Thread,
+    config: *const Config,
+    shutdown_requested: *std.atomic.Value(bool),
+
+    pub fn stopAndJoin(self: *Server) void {
+        self.shutdown_requested.store(true, .seq_cst);
+        wakeListener(self.config.web_host, self.config.web_port);
+        self.thread.join();
+    }
+};
+
 const ServerContext = struct {
     status: *RuntimeState,
     config: *const Config,
     config_dir: []const u8,
+    mode: ServeMode,
+    shutdown_requested: *std.atomic.Value(bool),
 };
 
-pub fn spawn(status: *RuntimeState, config: *const Config, config_dir: []const u8) !void {
+pub fn spawn(
+    status: *RuntimeState,
+    config: *const Config,
+    config_dir: []const u8,
+    mode: ServeMode,
+    shutdown_requested: *std.atomic.Value(bool),
+) !Server {
     const allocator = std.heap.page_allocator;
     const context = try allocator.create(ServerContext);
     context.* = .{
         .status = status,
         .config = config,
         .config_dir = config_dir,
+        .mode = mode,
+        .shutdown_requested = shutdown_requested,
     };
     errdefer allocator.destroy(context);
 
     const thread = try std.Thread.spawn(.{}, serverMain, .{context});
-    thread.detach();
+    return .{
+        .thread = thread,
+        .config = config,
+        .shutdown_requested = shutdown_requested,
+    };
 }
 
 fn serverMain(context: *ServerContext) void {
     const allocator = std.heap.page_allocator;
     defer allocator.destroy(context);
 
+    const service_name = serviceLabel(context.mode);
     const address = std.net.Address.resolveIp(context.config.web_host, context.config.web_port) catch |err| {
-        std.log.err("web ui: failed resolving listen address {s}:{d}: {}", .{
+        std.log.err("{s}: failed resolving listen address {s}:{d}: {}", .{
+            service_name,
             context.config.web_host,
             context.config.web_port,
             err,
@@ -44,7 +77,8 @@ fn serverMain(context: *ServerContext) void {
     var listener = address.listen(.{
         .reuse_address = true,
     }) catch |err| {
-        std.log.err("web ui: failed to listen on {s}:{d}: {}", .{
+        std.log.err("{s}: failed to listen on {s}:{d}: {}", .{
+            service_name,
             context.config.web_host,
             context.config.web_port,
             err,
@@ -53,25 +87,35 @@ fn serverMain(context: *ServerContext) void {
     };
     defer listener.deinit();
 
-    std.log.info("web ui listening at http://{s}:{d}", .{
+    std.log.info("{s} listening at http://{s}:{d}", .{
+        service_name,
         context.config.web_host,
         context.config.web_port,
     });
 
-    while (true) {
+    while (!context.shutdown_requested.load(.acquire)) {
         const connection = listener.accept() catch |err| {
-            std.log.err("web ui: accept failed: {}", .{err});
+            if (context.shutdown_requested.load(.acquire)) break;
+            std.log.err("{s}: accept failed: {}", .{ service_name, err });
             std.Thread.sleep(100 * std.time.ns_per_ms);
             continue;
         };
+
+        if (context.shutdown_requested.load(.acquire)) {
+            connection.stream.close();
+            break;
+        }
+
         connectionMain(context, connection);
     }
+
+    std.log.info("{s} stopped", .{service_name});
 }
 
 fn connectionMain(context: *ServerContext, connection: std.net.Server.Connection) void {
     defer connection.stream.close();
     configureConnectionTimeout(connection.stream) catch |err| {
-        std.log.err("web ui: failed configuring socket timeout: {}", .{err});
+        std.log.err("web service: failed configuring socket timeout: {}", .{err});
     };
 
     var send_buffer: [4096]u8 = undefined;
@@ -83,13 +127,13 @@ fn connectionMain(context: *ServerContext, connection: std.net.Server.Connection
     var request = server.receiveHead() catch |err| switch (err) {
         error.HttpConnectionClosing => return,
         else => {
-            std.log.err("web ui: failed receiving request: {}", .{err});
+            std.log.err("web service: failed receiving request: {}", .{err});
             return;
         },
     };
 
     serveRequest(context, &request) catch |err| {
-        std.log.err("web ui: request handling failed: {}", .{err});
+        std.log.err("web service: request handling failed: {}", .{err});
         respondJsonError(&request, .internal_server_error, "internal server error") catch {};
     };
 }
@@ -114,11 +158,18 @@ fn serveRequest(context: *ServerContext, request: *std.http.Server.Request) !voi
     const path = normalizePath(request.head.target);
     const method = request.head.method;
 
+    if (context.mode == .status_only) {
+        return serveStatusOnlyRequest(context, request, path, method);
+    }
+
     if (method == .GET and std.mem.eql(u8, path, "/")) {
         return respondHtml(request, ui_html);
     }
     if (method == .GET and std.mem.eql(u8, path, "/api/status")) {
         return serveStatus(context, request);
+    }
+    if (method == .GET and std.mem.eql(u8, path, "/healthz")) {
+        return serveHealth(request);
     }
     if (method == .GET and std.mem.eql(u8, path, "/api/skills")) {
         return serveDirectoryNames(context, request, "skills", "skills");
@@ -131,6 +182,7 @@ fn serveRequest(context: *ServerContext, request: *std.http.Server.Request) !voi
     }
 
     if (std.mem.eql(u8, path, "/api/status") or
+        std.mem.eql(u8, path, "/healthz") or
         std.mem.eql(u8, path, "/api/skills") or
         std.mem.eql(u8, path, "/api/extensions") or
         std.mem.eql(u8, path, "/api/chat"))
@@ -139,6 +191,28 @@ fn serveRequest(context: *ServerContext, request: *std.http.Server.Request) !voi
     }
 
     return respondJsonError(request, .not_found, "not found");
+}
+
+fn serveStatusOnlyRequest(
+    context: *ServerContext,
+    request: *std.http.Server.Request,
+    path: []const u8,
+    method: std.http.Method,
+) !void {
+    if (method == .GET and std.mem.eql(u8, path, "/api/status")) {
+        return serveStatus(context, request);
+    }
+    if (method == .GET and std.mem.eql(u8, path, "/healthz")) {
+        return serveHealth(request);
+    }
+    if (std.mem.eql(u8, path, "/api/status") or std.mem.eql(u8, path, "/healthz")) {
+        return respondJsonError(request, .method_not_allowed, "method not allowed");
+    }
+    return respondJsonError(request, .not_found, "not found");
+}
+
+fn serveHealth(request: *std.http.Server.Request) !void {
+    try respondJson(request, .ok, "{\"ok\":true}");
 }
 
 fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void {
@@ -368,4 +442,23 @@ fn respondJsonError(request: *std.http.Server.Request, status: std.http.Status, 
     });
 
     try respondJson(request, status, body);
+}
+
+fn serviceLabel(mode: ServeMode) []const u8 {
+    return switch (mode) {
+        .full => "web ui",
+        .status_only => "status api",
+    };
+}
+
+fn wakeListener(host: []const u8, port: u16) void {
+    const wake_host = if (std.mem.eql(u8, host, "0.0.0.0"))
+        "127.0.0.1"
+    else if (std.mem.eql(u8, host, "::"))
+        "::1"
+    else
+        host;
+
+    const stream = std.net.tcpConnectToHost(std.heap.page_allocator, wake_host, port) catch return;
+    stream.close();
 }
