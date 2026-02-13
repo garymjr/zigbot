@@ -1,0 +1,6 @@
+{
+  "telegram_bot_token": "123456:abc...",
+  "provider": "opencode",
+  "model": null,
+  "polling_timeout_seconds": 30
+}
