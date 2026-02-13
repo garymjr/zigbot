@@ -33,10 +33,10 @@ pub fn run() !void {
     var telegram = TelegramClient.init(allocator, config.telegram_bot_token);
     defer telegram.deinit();
 
-    std.log.info(
-        "zigbot started with config {s}, agent dir {s}, waiting for Telegram messages...",
-        .{ config_path, config_dir },
-    );
+    std.log.info("zigbot started", .{});
+    std.log.info("config path: {s}", .{config_path});
+    std.log.info("agent dir: {s}", .{config_dir});
+    std.log.info("waiting for Telegram messages...", .{});
 
     var next_update_offset: i64 = 0;
     while (true) {
