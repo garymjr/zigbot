@@ -3,20 +3,26 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>zigbot local console</title>
+  <title>zigbot operations dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;500;700&family=Syne:wght@500;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg0: #0f172a;
-      --bg1: #111827;
-      --surface: #1f2937;
-      --surface-2: #111b2f;
-      --text: #f9fafb;
-      --muted: #9ca3af;
-      --ok: #34d399;
-      --warn: #fbbf24;
-      --err: #f87171;
-      --accent: #38bdf8;
-      --line: rgba(148, 163, 184, 0.25);
+      --bg-void: #050b14;
+      --bg-deep: #08111f;
+      --bg-panel: rgba(10, 21, 38, 0.78);
+      --bg-panel-strong: rgba(7, 16, 29, 0.9);
+      --line: rgba(95, 130, 176, 0.35);
+      --line-strong: rgba(130, 177, 232, 0.6);
+      --text-main: #f5f9ff;
+      --text-dim: #95acc9;
+      --accent: #57d5ff;
+      --accent-hot: #ffbe55;
+      --ok: #3be3a3;
+      --warn: #ffd166;
+      --err: #ff6b73;
+      --shadow: 0 30px 70px rgba(0, 0, 0, 0.44);
     }
 
     * {
@@ -25,94 +31,196 @@
 
     body {
       margin: 0;
-      color: var(--text);
-      font-family: "Avenir Next", "Segoe UI", sans-serif;
-      background:
-        radial-gradient(1200px 600px at 90% -10%, rgba(56, 189, 248, 0.17), transparent 60%),
-        radial-gradient(900px 520px at -5% 0%, rgba(52, 211, 153, 0.15), transparent 60%),
-        linear-gradient(180deg, var(--bg0), var(--bg1));
+      color: var(--text-main);
+      font-family: "Chivo Mono", "Menlo", "Consolas", monospace;
       min-height: 100vh;
+      background:
+        radial-gradient(70vw 60vh at 112% -10%, rgba(87, 213, 255, 0.18), transparent 62%),
+        radial-gradient(40vw 40vh at -10% 10%, rgba(255, 190, 85, 0.15), transparent 65%),
+        linear-gradient(180deg, var(--bg-void), var(--bg-deep));
+      position: relative;
+      overflow-x: hidden;
     }
 
-    .wrap {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 20px;
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.22;
+      background:
+        repeating-linear-gradient(
+          0deg,
+          transparent 0 36px,
+          rgba(130, 177, 232, 0.07) 36px 37px
+        ),
+        repeating-linear-gradient(
+          90deg,
+          transparent 0 36px,
+          rgba(130, 177, 232, 0.05) 36px 37px
+        );
+      z-index: 0;
+    }
+
+    .dashboard {
+      width: min(1240px, calc(100% - 36px));
+      margin: 20px auto 30px;
       display: grid;
-      gap: 14px;
+      gap: 16px;
+      position: relative;
+      z-index: 1;
     }
 
-    .hero {
+    .topbar {
+      border: 1px solid var(--line-strong);
+      background:
+        linear-gradient(135deg, rgba(9, 20, 34, 0.95), rgba(9, 18, 33, 0.72)),
+        radial-gradient(circle at 85% 20%, rgba(87, 213, 255, 0.12), transparent 40%);
+      border-radius: 18px;
+      padding: 18px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      padding: 16px;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: linear-gradient(155deg, rgba(17, 27, 47, 0.95), rgba(31, 41, 55, 0.95));
-      backdrop-filter: blur(8px);
+      gap: 16px;
+      box-shadow: var(--shadow);
+      animation: riseIn 600ms ease-out both;
     }
 
-    .title {
+    .brand {
+      display: grid;
+      gap: 6px;
+    }
+
+    .brand h1 {
       margin: 0;
-      font-size: 1.3rem;
-      letter-spacing: 0.3px;
-      text-transform: lowercase;
+      font-family: "Syne", sans-serif;
+      font-size: clamp(1.4rem, 2.5vw, 2rem);
+      line-height: 1;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
     }
 
-    .sub {
-      margin: 4px 0 0;
-      color: var(--muted);
-      font-size: 0.9rem;
+    .brand p {
+      margin: 0;
+      color: var(--text-dim);
+      font-size: 0.84rem;
+      letter-spacing: 0.02em;
     }
 
-    .badge-row {
+    .badge-strip {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 10px;
       justify-content: flex-end;
     }
 
     .badge {
-      font-size: 0.82rem;
       border-radius: 999px;
-      padding: 7px 10px;
       border: 1px solid var(--line);
-      background: rgba(30, 41, 59, 0.75);
+      background: rgba(7, 18, 32, 0.7);
+      color: var(--text-main);
+      font-size: 0.78rem;
+      letter-spacing: 0.03em;
+      padding: 8px 12px;
       white-space: nowrap;
+      transition: border-color 150ms ease, color 150ms ease, transform 150ms ease;
     }
 
-    .ok { color: var(--ok); }
-    .warn { color: var(--warn); }
-    .err { color: var(--err); }
+    .badge.ok {
+      color: var(--ok);
+      border-color: rgba(59, 227, 163, 0.45);
+    }
 
-    .grid {
+    .badge.warn {
+      color: var(--warn);
+      border-color: rgba(255, 209, 102, 0.45);
+    }
+
+    .badge.err {
+      color: var(--err);
+      border-color: rgba(255, 107, 115, 0.45);
+    }
+
+    .kpi-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .kpi-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      display: grid;
+      gap: 6px;
+      box-shadow: var(--shadow);
+      animation: riseIn 600ms ease-out both;
+    }
+
+    .kpi-card:nth-child(1) { animation-delay: 70ms; }
+    .kpi-card:nth-child(2) { animation-delay: 110ms; }
+    .kpi-card:nth-child(3) { animation-delay: 150ms; }
+    .kpi-card:nth-child(4) { animation-delay: 190ms; }
+
+    .kpi-label {
+      color: var(--text-dim);
+      font-size: 0.77rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .kpi-value {
+      font-family: "Syne", sans-serif;
+      font-size: clamp(1.3rem, 2.4vw, 2rem);
+      letter-spacing: 0.01em;
+      line-height: 1;
+    }
+
+    .kpi-note {
+      color: var(--text-dim);
+      font-size: 0.74rem;
+      opacity: 0.8;
+    }
+
+    .layout-grid {
       display: grid;
       grid-template-columns: repeat(12, minmax(0, 1fr));
       gap: 14px;
     }
 
-    .card {
-      grid-column: span 6;
-      background: var(--surface);
+    .panel {
+      grid-column: span 4;
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: 16px;
+      background: var(--bg-panel);
+      backdrop-filter: blur(4px);
       padding: 14px;
-      min-height: 180px;
+      min-height: 220px;
+      box-shadow: var(--shadow);
+      animation: riseIn 650ms ease-out both;
+      transition: border-color 180ms ease, transform 180ms ease;
     }
 
-    .card.wide {
-      grid-column: span 12;
-      min-height: 280px;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+    .panel:hover {
+      border-color: var(--line-strong);
+      transform: translateY(-2px);
     }
 
-    h2 {
-      margin: 0 0 10px;
-      font-size: 0.95rem;
+    .panel:nth-child(1) { animation-delay: 220ms; }
+    .panel:nth-child(2) { animation-delay: 260ms; }
+    .panel:nth-child(3) { animation-delay: 300ms; }
+    .panel:nth-child(4) { animation-delay: 340ms; }
+    .panel:nth-child(5) { animation-delay: 380ms; }
+
+    .panel.wide {
+      grid-column: span 8;
+    }
+
+    .panel h2 {
+      margin: 0 0 12px;
+      font-family: "Syne", sans-serif;
+      font-size: 1rem;
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: var(--accent);
@@ -121,287 +229,595 @@
     .kv {
       margin: 0;
       display: grid;
-      gap: 6px;
-      font-size: 0.92rem;
+      gap: 7px;
+      font-size: 0.84rem;
     }
 
     .kv div {
       display: flex;
       justify-content: space-between;
       gap: 10px;
-      border-bottom: 1px dashed rgba(148, 163, 184, 0.12);
-      padding-bottom: 5px;
+      align-items: baseline;
+      padding-bottom: 6px;
+      border-bottom: 1px dashed rgba(95, 130, 176, 0.22);
     }
 
     .kv dt {
-      color: var(--muted);
+      color: var(--text-dim);
     }
 
     .kv dd {
       margin: 0;
       text-align: right;
       font-variant-numeric: tabular-nums;
+      max-width: 60%;
+      overflow-wrap: anywhere;
+    }
+
+    .meter-wrap {
+      margin-top: 12px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .meter {
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(59, 84, 114, 0.4);
+      border: 1px solid rgba(90, 128, 167, 0.4);
+      overflow: hidden;
+    }
+
+    .meter-fill {
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #3be3a3, #57d5ff);
+      transition: width 320ms ease;
+    }
+
+    .meter-fill.warn {
+      background: linear-gradient(90deg, #ffbe55, #ffd166);
+    }
+
+    .meter-fill.err {
+      background: linear-gradient(90deg, #ff6b73, #ff9a67);
+    }
+
+    .meter-label {
+      color: var(--text-dim);
+      font-size: 0.74rem;
+    }
+
+    .timeline {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 10px;
+    }
+
+    .timeline-item {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 10px;
+      align-items: center;
+      background: var(--bg-panel-strong);
+      border: 1px solid rgba(90, 128, 167, 0.3);
+      border-radius: 10px;
+      padding: 10px;
+    }
+
+    .timeline-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      box-shadow: 0 0 12px currentColor;
+      color: var(--accent);
+    }
+
+    .timeline-dot.ok { color: var(--ok); }
+    .timeline-dot.warn { color: var(--warn); }
+    .timeline-dot.err { color: var(--err); }
+
+    .timeline-copy {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .timeline-copy strong {
+      font-size: 0.8rem;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .timeline-copy span {
+      color: var(--text-dim);
+      font-size: 0.72rem;
+    }
+
+    .catalog-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .catalog-group h3 {
+      margin: 0 0 8px;
+      color: var(--accent-hot);
+      font-family: "Syne", sans-serif;
+      font-size: 0.9rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
 
     .list {
       margin: 0;
       padding-left: 18px;
-      color: #d1d5db;
+      display: grid;
+      gap: 6px;
+      color: #d7e8ff;
+      font-size: 0.82rem;
+      line-height: 1.2;
     }
 
     .list li {
-      margin: 6px 0;
-      line-height: 1.2;
-      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
-    .chat {
-      display: grid;
-      grid-template-rows: 1fr auto;
-      gap: 12px;
-      flex: 1;
-      min-height: 0;
-    }
-
-    .chat-log {
-      border: 1px solid var(--line);
+    .error-console {
+      margin: 10px 0 0;
       border-radius: 10px;
-      background: var(--surface-2);
+      border: 1px solid rgba(90, 128, 167, 0.35);
+      background: rgba(4, 11, 21, 0.85);
       padding: 10px;
-      overflow: auto;
-      min-height: 180px;
-      max-height: 380px;
-      font-size: 0.92rem;
+      min-height: 84px;
+      color: #d7e8ff;
+      font-size: 0.78rem;
       line-height: 1.35;
-    }
-
-    .msg {
-      margin: 0 0 10px;
       white-space: pre-wrap;
       word-break: break-word;
     }
 
-    .msg:last-child {
-      margin-bottom: 0;
+    .error-console.ok {
+      border-color: rgba(59, 227, 163, 0.35);
+      color: #bafadf;
     }
 
-    .you { color: #bae6fd; }
-    .bot { color: #d1fae5; }
-    .sys { color: var(--muted); }
-    .bad { color: var(--err); }
-
-    .chat-compose {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 10px;
-      margin: 0;
-      align-items: end;
+    .error-console.err {
+      border-color: rgba(255, 107, 115, 0.45);
+      color: #ffd8db;
+      animation: pulseAlert 2.2s ease-in-out infinite;
     }
 
-    .chat-compose > * {
-      min-width: 0;
+    @keyframes pulseAlert {
+      0%, 100% { box-shadow: inset 0 0 0 0 rgba(255, 107, 115, 0); }
+      50% { box-shadow: inset 0 0 30px rgba(255, 107, 115, 0.08); }
     }
 
-    #chatInput {
-      width: 100%;
-      min-width: 0;
-      min-height: 88px;
-      border-radius: 10px;
-      border: 0;
-      background: #0b1220;
-      color: var(--text);
-      padding: 10px 12px;
-      font: inherit;
-      line-height: 1.35;
-      resize: vertical;
-      outline: none;
-      box-shadow: inset 0 0 0 1px var(--line);
+    @keyframes riseIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
-    #chatInput:focus {
-      box-shadow: inset 0 0 0 2px rgba(96, 165, 250, 0.95);
-    }
+    @media (max-width: 1080px) {
+      .kpi-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
 
-    button {
-      border: 1px solid rgba(56, 189, 248, 0.45);
-      background: linear-gradient(180deg, rgba(14, 116, 144, 0.9), rgba(8, 47, 73, 0.95));
-      color: #ecfeff;
-      border-radius: 10px;
-      font: inherit;
-      padding: 10px 14px;
-      cursor: pointer;
-    }
+      .panel {
+        grid-column: span 6;
+      }
 
-    button[disabled] {
-      opacity: 0.55;
-      cursor: not-allowed;
-    }
-
-    @media (max-width: 860px) {
-      .card {
+      .panel.wide {
         grid-column: span 12;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .dashboard {
+        width: min(1240px, calc(100% - 20px));
+        margin-top: 12px;
+      }
+
+      .topbar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .badge-strip {
+        justify-content: flex-start;
+      }
+
+      .kpi-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .panel,
+      .panel.wide {
+        grid-column: span 12;
+      }
+
+      .catalog-grid {
+        grid-template-columns: 1fr;
       }
     }
   </style>
 </head>
 <body>
-  <main class="wrap">
-    <section class="hero">
-      <div>
-        <h1 class="title">zigbot local console</h1>
-        <p class="sub" id="updatedAt">loading status...</p>
+  <main class="dashboard">
+    <section class="topbar">
+      <div class="brand">
+        <h1>zigbot operations dashboard</h1>
+        <p id="updatedAt">Connecting to status API...</p>
       </div>
-      <div class="badge-row">
+      <div class="badge-strip">
         <div class="badge" id="badgeAgent">agent: unknown</div>
         <div class="badge" id="badgeHeartbeat">heartbeat: unknown</div>
         <div class="badge" id="badgePoll">poll: unknown</div>
       </div>
     </section>
 
-    <section class="grid">
-      <article class="card">
-        <h2>Bot / Agent Status</h2>
-        <dl class="kv" id="botStatus"></dl>
+    <section class="kpi-grid">
+      <article class="kpi-card">
+        <div class="kpi-label">Uptime</div>
+        <div class="kpi-value" id="kpiUptime">--</div>
+        <div class="kpi-note">continuous service runtime</div>
+      </article>
+      <article class="kpi-card">
+        <div class="kpi-label">Telegram Messages</div>
+        <div class="kpi-value" id="kpiMessages">--</div>
+        <div class="kpi-note">total handled via polling loop</div>
+      </article>
+      <article class="kpi-card">
+        <div class="kpi-label">Heartbeat Runs</div>
+        <div class="kpi-value" id="kpiHeartbeats">--</div>
+        <div class="kpi-note">scheduled execution count</div>
+      </article>
+      <article class="kpi-card">
+        <div class="kpi-label">Poll Errors</div>
+        <div class="kpi-value" id="kpiPollErrors">--</div>
+        <div class="kpi-note">telegram polling failures observed</div>
+      </article>
+    </section>
+
+    <section class="layout-grid">
+      <article class="panel">
+        <h2>Core Runtime</h2>
+        <dl class="kv" id="coreStatus"></dl>
       </article>
 
-      <article class="card">
-        <h2>Heartbeat</h2>
+      <article class="panel">
+        <h2>Heartbeat Reliability</h2>
         <dl class="kv" id="heartbeatStatus"></dl>
-      </article>
-
-      <article class="card">
-        <h2>Skills</h2>
-        <ul class="list" id="skillsList"></ul>
-      </article>
-
-      <article class="card">
-        <h2>Extensions</h2>
-        <ul class="list" id="extensionsList"></ul>
-      </article>
-
-      <article class="card wide">
-          <h2>Local Chat</h2>
-          <div class="chat">
-            <div class="chat-log" id="chatLog"></div>
-            <div class="chat-compose" id="chatComposer">
-              <textarea id="chatInput" placeholder="Ask the local agent..." maxlength="4000"></textarea>
-              <button id="chatSend" type="button">Send</button>
-            </div>
+        <div class="meter-wrap">
+          <div class="meter">
+            <div class="meter-fill" id="heartbeatMeterFill"></div>
           </div>
-        </article>
-      </section>
+          <div class="meter-label" id="heartbeatMeterText">waiting for telemetry...</div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>Diagnostics</h2>
+        <dl class="kv" id="diagnosticsStatus"></dl>
+        <pre class="error-console ok" id="errorConsole">No active errors recorded.</pre>
+      </article>
+
+      <article class="panel wide">
+        <h2>Recent Activity Timeline</h2>
+        <ul class="timeline" id="timelineList"></ul>
+      </article>
+
+      <article class="panel">
+        <h2>Automation Inventory</h2>
+        <div class="catalog-grid">
+          <section class="catalog-group">
+            <h3>Skills</h3>
+            <ul class="list" id="skillsList"></ul>
+          </section>
+          <section class="catalog-group">
+            <h3>Extensions</h3>
+            <ul class="list" id="extensionsList"></ul>
+          </section>
+        </div>
+      </article>
+
+    </section>
   </main>
 
   <script>
-    const statusEl = document.getElementById("botStatus");
-    const heartbeatEl = document.getElementById("heartbeatStatus");
+    const coreStatusEl = document.getElementById("coreStatus");
+    const heartbeatStatusEl = document.getElementById("heartbeatStatus");
+    const diagnosticsStatusEl = document.getElementById("diagnosticsStatus");
     const skillsEl = document.getElementById("skillsList");
     const extensionsEl = document.getElementById("extensionsList");
     const updatedAtEl = document.getElementById("updatedAt");
     const badgeAgentEl = document.getElementById("badgeAgent");
     const badgeHeartbeatEl = document.getElementById("badgeHeartbeat");
     const badgePollEl = document.getElementById("badgePoll");
-    const chatLogEl = document.getElementById("chatLog");
-    const chatInputEl = document.getElementById("chatInput");
-    const chatSendEl = document.getElementById("chatSend");
+    const timelineListEl = document.getElementById("timelineList");
+    const errorConsoleEl = document.getElementById("errorConsole");
+    const heartbeatMeterFillEl = document.getElementById("heartbeatMeterFill");
+    const heartbeatMeterTextEl = document.getElementById("heartbeatMeterText");
+    const kpiUptimeEl = document.getElementById("kpiUptime");
+    const kpiMessagesEl = document.getElementById("kpiMessages");
+    const kpiHeartbeatsEl = document.getElementById("kpiHeartbeats");
+    const kpiPollErrorsEl = document.getElementById("kpiPollErrors");
 
-    const fmtTime = (ms) => {
+    const numberFmt = new Intl.NumberFormat();
+
+    function fmtTime(ms) {
       if (!ms || ms <= 0) return "never";
       return new Date(ms).toLocaleTimeString();
-    };
+    }
 
-    const fmtAgo = (ms, nowMs) => {
+    function fmtAgo(ms, nowMs) {
       if (!ms || ms <= 0) return "never";
       const sec = Math.max(0, Math.floor((nowMs - ms) / 1000));
       if (sec < 60) return `${sec}s ago`;
       const min = Math.floor(sec / 60);
       if (min < 60) return `${min}m ago`;
       const hr = Math.floor(min / 60);
-      return `${hr}h ago`;
-    };
+      if (hr < 48) return `${hr}h ago`;
+      const day = Math.floor(hr / 24);
+      return `${day}d ago`;
+    }
 
-    const makeKv = (rows) =>
-      rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
+    function fmtRelative(ms, nowMs) {
+      if (!ms || ms <= 0) return "never";
+      const deltaSec = Math.floor((ms - nowMs) / 1000);
+      if (deltaSec <= 0) return fmtAgo(ms, nowMs);
 
-    const addLog = (klass, prefix, text) => {
-      const p = document.createElement("p");
-      p.className = `msg ${klass}`;
-      p.textContent = `${prefix}${text}`;
-      chatLogEl.appendChild(p);
-      chatLogEl.scrollTop = chatLogEl.scrollHeight;
-    };
+      if (deltaSec < 60) return `in ${deltaSec}s`;
+      const min = Math.floor(deltaSec / 60);
+      if (min < 60) return `in ${min}m`;
+      const hr = Math.floor(min / 60);
+      if (hr < 48) return `in ${hr}h`;
+      const day = Math.floor(hr / 24);
+      return `in ${day}d`;
+    }
+
+    function fmtDuration(totalSeconds) {
+      const seconds = Math.max(0, Number(totalSeconds) || 0);
+      const days = Math.floor(seconds / 86400);
+      const hours = Math.floor((seconds % 86400) / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      if (days > 0) return `${days}d ${hours}h`;
+      if (hours > 0) return `${hours}h ${minutes}m`;
+      if (minutes > 0) return `${minutes}m`;
+      return `${seconds}s`;
+    }
+
+    function fmtCount(value) {
+      return numberFmt.format(Number(value) || 0);
+    }
 
     async function fetchJson(url, opts) {
-      const res = await fetch(url, opts);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const msg = data && data.error ? data.error : `request failed (${res.status})`;
-        throw new Error(msg);
+      const response = await fetch(url, opts);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = data && data.error ? data.error : `request failed (${response.status})`;
+        throw new Error(message);
       }
       return data;
     }
 
-    function renderStringList(el, values) {
-      if (!values || values.length === 0) {
-        el.innerHTML = "<li>(none found)</li>";
-        return;
-      }
-      el.innerHTML = values.map((v) => `<li>${v}</li>`).join("");
+    function setBadge(element, text, kind) {
+      element.className = `badge ${kind || ""}`.trim();
+      element.textContent = text;
     }
 
-    function setBadge(el, text, kind) {
-      el.className = `badge ${kind || ""}`.trim();
-      el.textContent = text;
+    function renderKv(element, rows) {
+      element.textContent = "";
+      for (const [label, value] of rows) {
+        const row = document.createElement("div");
+        const dt = document.createElement("dt");
+        const dd = document.createElement("dd");
+        dt.textContent = label;
+        dd.textContent = value;
+        row.append(dt, dd);
+        element.appendChild(row);
+      }
+    }
+
+    function renderStringList(element, values) {
+      element.textContent = "";
+      const items = values && values.length > 0 ? values : ["(none found)"];
+      for (const value of items) {
+        const li = document.createElement("li");
+        li.textContent = value;
+        element.appendChild(li);
+      }
+    }
+
+    function classifyHeartbeatHealth(status) {
+      if (status.heartbeat_run_count <= 0) return 100;
+      const failureRate = status.heartbeat_error_count / status.heartbeat_run_count;
+      const baseScore = status.last_heartbeat_ok ? 100 : 72;
+      return Math.max(0, Math.round(baseScore - (failureRate * 72)));
+    }
+
+    function timelineFromStatus(status, nowMs) {
+      const events = [];
+      if (status.last_poll_ms > 0) {
+        events.push({
+          ms: status.last_poll_ms,
+          title: status.last_poll_ok ? "Telegram poll completed" : "Telegram poll failed",
+          meta: `${fmtTime(status.last_poll_ms)} (${fmtAgo(status.last_poll_ms, nowMs)})`,
+          kind: status.last_poll_ok ? "ok" : "err",
+        });
+      }
+      if (status.last_heartbeat_started_ms > 0) {
+        events.push({
+          ms: status.last_heartbeat_started_ms,
+          title: "Heartbeat started",
+          meta: `${fmtTime(status.last_heartbeat_started_ms)} (${fmtAgo(status.last_heartbeat_started_ms, nowMs)})`,
+          kind: "warn",
+        });
+      }
+      if (status.last_heartbeat_finished_ms > 0) {
+        events.push({
+          ms: status.last_heartbeat_finished_ms,
+          title: status.last_heartbeat_ok ? "Heartbeat finished cleanly" : "Heartbeat finished with error",
+          meta: `${fmtTime(status.last_heartbeat_finished_ms)} (${fmtAgo(status.last_heartbeat_finished_ms, nowMs)})`,
+          kind: status.last_heartbeat_ok ? "ok" : "err",
+        });
+      }
+      if (status.last_web_chat_ms > 0) {
+        events.push({
+          ms: status.last_web_chat_ms,
+          title: status.last_web_chat_ok ? "Local web request succeeded" : "Local web request failed",
+          meta: `${fmtTime(status.last_web_chat_ms)} (${fmtAgo(status.last_web_chat_ms, nowMs)})`,
+          kind: status.last_web_chat_ok ? "warn" : "err",
+        });
+      }
+      if (status.agent_busy && status.active_task_started_ms > 0) {
+        events.push({
+          ms: status.active_task_started_ms,
+          title: `Agent working on ${status.active_task}`,
+          meta: `${fmtTime(status.active_task_started_ms)} (${fmtAgo(status.active_task_started_ms, nowMs)})`,
+          kind: "warn",
+        });
+      }
+      events.sort((a, b) => b.ms - a.ms);
+      return events.slice(0, 8);
+    }
+
+    function renderTimeline(events) {
+      timelineListEl.textContent = "";
+      if (!events.length) {
+        const empty = document.createElement("li");
+        empty.className = "timeline-item";
+        const dot = document.createElement("span");
+        dot.className = "timeline-dot warn";
+        const copy = document.createElement("div");
+        copy.className = "timeline-copy";
+        const title = document.createElement("strong");
+        title.textContent = "No activity recorded yet";
+        const meta = document.createElement("span");
+        meta.textContent = "Waiting for first poll, heartbeat, or workload.";
+        copy.append(title, meta);
+        empty.append(dot, copy);
+        timelineListEl.appendChild(empty);
+        return;
+      }
+
+      for (const event of events) {
+        const li = document.createElement("li");
+        li.className = "timeline-item";
+
+        const dot = document.createElement("span");
+        dot.className = `timeline-dot ${event.kind}`;
+
+        const copy = document.createElement("div");
+        copy.className = "timeline-copy";
+
+        const title = document.createElement("strong");
+        title.textContent = event.title;
+        const meta = document.createElement("span");
+        meta.textContent = event.meta;
+
+        copy.append(title, meta);
+        li.append(dot, copy);
+        timelineListEl.appendChild(li);
+      }
+    }
+
+    function renderErrors(status) {
+      const errors = [];
+      if (status.last_poll_error) errors.push(`[poll] ${status.last_poll_error}`);
+      if (status.last_heartbeat_error) errors.push(`[heartbeat] ${status.last_heartbeat_error}`);
+      if (status.last_web_error) errors.push(`[web] ${status.last_web_error}`);
+
+      if (!errors.length) {
+        errorConsoleEl.className = "error-console ok";
+        errorConsoleEl.textContent = "No active errors recorded.";
+        return;
+      }
+
+      errorConsoleEl.className = "error-console err";
+      errorConsoleEl.textContent = errors.join("\n");
     }
 
     async function refreshStatus() {
       try {
-        const s = await fetchJson("/api/status");
-        const now = s.now_ms;
-        const heartbeatNext = s.next_heartbeat_ms ? fmtAgo(s.next_heartbeat_ms, now).replace("ago", "from now") : "disabled";
-        const activeFor = s.agent_busy ? `${Math.max(0, Math.floor((now - s.active_task_started_ms) / 1000))}s` : "0s";
+        const status = await fetchJson("/api/status");
+        const nowMs = status.now_ms;
+        const activeFor = status.agent_busy
+          ? `${Math.max(0, Math.floor((nowMs - status.active_task_started_ms) / 1000))}s`
+          : "0s";
+        const nextHeartbeat = status.next_heartbeat_ms
+          ? `${fmtTime(status.next_heartbeat_ms)} (${fmtRelative(status.next_heartbeat_ms, nowMs)})`
+          : "disabled";
+        const healthScore = classifyHeartbeatHealth(status);
 
-        updatedAtEl.textContent = `updated ${new Date(now).toLocaleTimeString()} (${s.uptime_seconds}s uptime)`;
+        updatedAtEl.textContent = `Updated ${new Date(nowMs).toLocaleString()} · Uptime ${fmtDuration(status.uptime_seconds)}`;
 
-        statusEl.innerHTML = makeKv([
-          ["Agent Busy", s.agent_busy ? "yes" : "no"],
-          ["Active Task", s.active_task],
-          ["Active For", activeFor],
-          ["Telegram Messages", String(s.telegram_message_count)],
-          ["Web Chats", String(s.web_chat_count)],
-          ["Last Poll", `${fmtTime(s.last_poll_ms)} (${fmtAgo(s.last_poll_ms, now)})`],
-          ["Poll Errors", String(s.poll_error_count)],
-          ["Last Poll Error", s.last_poll_error || "(none)"]
+        kpiUptimeEl.textContent = fmtDuration(status.uptime_seconds);
+        kpiMessagesEl.textContent = fmtCount(status.telegram_message_count);
+        kpiHeartbeatsEl.textContent = fmtCount(status.heartbeat_run_count);
+        kpiPollErrorsEl.textContent = fmtCount(status.poll_error_count);
+
+        renderKv(coreStatusEl, [
+          ["Agent state", status.agent_busy ? "busy" : "idle"],
+          ["Active task", status.active_task],
+          ["Task runtime", activeFor],
+          ["Started", new Date(status.started_ms).toLocaleTimeString()],
+          ["Telegram messages", fmtCount(status.telegram_message_count)],
+          ["Local web requests", fmtCount(status.web_chat_count)],
         ]);
 
-        heartbeatEl.innerHTML = makeKv([
-          ["Next Heartbeat", heartbeatNext],
-          ["Runs", String(s.heartbeat_run_count)],
-          ["Errors", String(s.heartbeat_error_count)],
-          ["Last Start", `${fmtTime(s.last_heartbeat_started_ms)} (${fmtAgo(s.last_heartbeat_started_ms, now)})`],
-          ["Last Finish", `${fmtTime(s.last_heartbeat_finished_ms)} (${fmtAgo(s.last_heartbeat_finished_ms, now)})`],
-          ["Last Result", s.last_heartbeat_ok ? "ok" : "error"],
-          ["Last Error", s.last_heartbeat_error || "(none)"],
-          ["Last Web Chat Duration", `${s.last_web_chat_duration_ms}ms`]
+        renderKv(heartbeatStatusEl, [
+          ["Next run", nextHeartbeat],
+          ["Total runs", fmtCount(status.heartbeat_run_count)],
+          ["Error count", fmtCount(status.heartbeat_error_count)],
+          ["Last started", `${fmtTime(status.last_heartbeat_started_ms)} (${fmtAgo(status.last_heartbeat_started_ms, nowMs)})`],
+          ["Last finished", `${fmtTime(status.last_heartbeat_finished_ms)} (${fmtAgo(status.last_heartbeat_finished_ms, nowMs)})`],
+          ["Last result", status.last_heartbeat_ok ? "ok" : "error"],
         ]);
+
+        renderKv(diagnosticsStatusEl, [
+          ["Last poll", `${fmtTime(status.last_poll_ms)} (${fmtAgo(status.last_poll_ms, nowMs)})`],
+          ["Last poll result", status.last_poll_ok ? "ok" : "error"],
+          ["Poll error total", fmtCount(status.poll_error_count)],
+          ["Last local request", `${fmtTime(status.last_web_chat_ms)} (${fmtAgo(status.last_web_chat_ms, nowMs)})`],
+          ["Last local duration", `${status.last_web_chat_duration_ms}ms`],
+        ]);
+
+        heartbeatMeterFillEl.style.width = `${healthScore}%`;
+        heartbeatMeterFillEl.className = `meter-fill ${
+          healthScore >= 80 ? "" : healthScore >= 50 ? "warn" : "err"
+        }`.trim();
+        heartbeatMeterTextEl.textContent = `Heartbeat health score: ${healthScore}%`;
+
+        renderTimeline(timelineFromStatus(status, nowMs));
+        renderErrors(status);
 
         setBadge(
           badgeAgentEl,
-          s.agent_busy ? `agent: busy (${s.active_task})` : "agent: idle",
-          s.agent_busy ? "warn" : "ok"
+          status.agent_busy ? `agent: busy (${status.active_task})` : "agent: idle",
+          status.agent_busy ? "warn" : "ok"
         );
         setBadge(
           badgeHeartbeatEl,
-          s.last_heartbeat_ok ? "heartbeat: ok" : "heartbeat: error",
-          s.last_heartbeat_ok ? "ok" : "err"
+          status.last_heartbeat_ok ? "heartbeat: healthy" : "heartbeat: failing",
+          status.last_heartbeat_ok ? "ok" : "err"
         );
         setBadge(
           badgePollEl,
-          s.last_poll_ok ? "poll: ok" : "poll: error",
-          s.last_poll_ok ? "ok" : "err"
+          status.last_poll_ok ? "poll: healthy" : "poll: failing",
+          status.last_poll_ok ? "ok" : "err"
         );
-      } catch (err) {
-        updatedAtEl.textContent = `status unavailable: ${err.message}`;
+      } catch (error) {
+        updatedAtEl.textContent = `Status unavailable: ${error.message}`;
         setBadge(badgeAgentEl, "agent: unavailable", "err");
         setBadge(badgeHeartbeatEl, "heartbeat: unavailable", "err");
         setBadge(badgePollEl, "poll: unavailable", "err");
@@ -412,49 +828,18 @@
       try {
         const skills = await fetchJson("/api/skills");
         renderStringList(skillsEl, skills.skills);
-      } catch (err) {
-        renderStringList(skillsEl, [`error: ${err.message}`]);
+      } catch (error) {
+        renderStringList(skillsEl, [`error: ${error.message}`]);
       }
 
       try {
         const extensions = await fetchJson("/api/extensions");
         renderStringList(extensionsEl, extensions.extensions);
-      } catch (err) {
-        renderStringList(extensionsEl, [`error: ${err.message}`]);
+      } catch (error) {
+        renderStringList(extensionsEl, [`error: ${error.message}`]);
       }
     }
 
-    async function submitChat() {
-      const rawText = chatInputEl.value;
-      if (!rawText.trim()) return;
-
-      chatSendEl.disabled = true;
-      chatInputEl.disabled = true;
-      addLog("you", "you: ", rawText);
-      chatInputEl.value = "";
-
-      try {
-        const res = await fetchJson("/api/chat", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: rawText }),
-        });
-        addLog("bot", "bot: ", res.response || "(empty response)");
-      } catch (err) {
-        addLog("bad", "error: ", err.message);
-      } finally {
-        chatSendEl.disabled = false;
-        chatInputEl.disabled = false;
-        chatInputEl.focus();
-        refreshStatus();
-      }
-    }
-
-    chatSendEl.addEventListener("click", () => {
-      submitChat();
-    });
-
-    addLog("sys", "", "local chat ready, telegram remains the primary interface.");
     refreshStatus();
     refreshStaticLists();
     setInterval(refreshStatus, 3000);
