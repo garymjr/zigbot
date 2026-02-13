@@ -64,7 +64,10 @@ pub fn run() !void {
 
     if (mode == .beat) {
         std.log.info("running manual heartbeat", .{});
-        try runHeartbeat(allocator, &config, config_dir);
+        runHeartbeat(allocator, &config, config_dir) catch |err| {
+            std.log.err("manual heartbeat failed: {}", .{err});
+            return err;
+        };
         std.log.info("manual heartbeat finished", .{});
         return;
     }
