@@ -4,6 +4,9 @@ const TelegramClient = @import("telegram.zig").TelegramClient;
 const askPi = @import("pi_agent.zig").askPi;
 const runHeartbeat = @import("pi_agent.zig").runHeartbeat;
 const ensureSecretsExtensionInstalled = @import("secret_extension.zig").ensureInstalled;
+const RuntimeState = @import("runtime_state.zig").RuntimeState;
+const agentTaskName = @import("runtime_state.zig").agentTaskName;
+const web = @import("web.zig");
 
 const RunMode = enum {
     serve,
@@ -75,19 +78,31 @@ pub fn run() !void {
     var telegram = TelegramClient.init(allocator, config.telegram_bot_token);
     defer telegram.deinit();
 
+    var runtime_state = RuntimeState.init();
+
+    if (config.web_enabled) {
+        web.spawn(&runtime_state, &config, config_dir) catch |err| {
+            std.log.err("failed starting web ui: {}", .{err});
+        };
+    } else {
+        std.log.info("web ui disabled via config", .{});
+    }
+
     std.log.info("zigbot started", .{});
     std.log.info("waiting for Telegram messages...", .{});
 
     var next_update_offset: i64 = 0;
     var next_heartbeat_ms = initialNextHeartbeatMillis(&config);
+    runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
     while (true) {
         const poll_timeout_seconds = effectivePollingTimeoutSeconds(&config, next_heartbeat_ms);
-        handlePollCycle(allocator, &config, config_dir, &telegram, &next_update_offset, poll_timeout_seconds) catch |err| {
+        handlePollCycle(allocator, &runtime_state, &config, config_dir, &telegram, &next_update_offset, poll_timeout_seconds) catch |err| {
+            runtime_state.recordPollError(err);
             std.log.err("poll loop error: {}", .{err});
             std.Thread.sleep(2 * std.time.ns_per_s);
         };
 
-        triggerHeartbeatIfDue(allocator, &config, config_dir, &next_heartbeat_ms);
+        triggerHeartbeatIfDue(allocator, &runtime_state, &config, config_dir, &next_heartbeat_ms);
     }
 }
 
@@ -122,6 +137,7 @@ fn configDirFromConfigPath(allocator: std.mem.Allocator, config_path: []const u8
 
 fn handlePollCycle(
     allocator: std.mem.Allocator,
+    runtime_state: *RuntimeState,
     config: *const Config,
     config_dir: []const u8,
     telegram: *TelegramClient,
@@ -130,6 +146,7 @@ fn handlePollCycle(
 ) !void {
     var updates = try telegram.getUpdates(next_update_offset.*, poll_timeout_seconds);
     defer updates.deinit();
+    runtime_state.recordPollSuccess();
 
     for (updates.value.result) |update| {
         if (update.update_id >= next_update_offset.*) {
@@ -139,15 +156,31 @@ fn handlePollCycle(
         const message = update.message orelse continue;
         const user_text = message.text orelse continue;
         if (user_text.len == 0) continue;
+        runtime_state.recordTelegramMessage();
 
         std.log.info("incoming message chat_id={d}, update_id={d}", .{ message.chat.id, update.update_id });
 
-        const response_text = askPi(allocator, config, config_dir, user_text) catch |err| blk: {
-            std.log.err("pi request failed: {}", .{err});
-            break :blk try allocator.dupe(
-                u8,
-                "I hit an error while generating a reply. Please try again in a moment.",
-            );
+        const response_text = response: {
+            if (!runtime_state.tryBeginAgentTask(.telegram)) {
+                const snapshot = runtime_state.snapshot();
+                std.log.info(
+                    "telegram request skipped, agent busy with task={s}",
+                    .{agentTaskName(snapshot.active_task)},
+                );
+                break :response try allocator.dupe(
+                    u8,
+                    "I am currently busy with another request. Please try again in a moment.",
+                );
+            }
+            defer runtime_state.finishAgentTask(.telegram);
+
+            break :response askPi(allocator, config, config_dir, user_text) catch |err| blk: {
+                std.log.err("pi request failed: {}", .{err});
+                break :blk try allocator.dupe(
+                    u8,
+                    "I hit an error while generating a reply. Please try again in a moment.",
+                );
+            };
         };
         defer allocator.free(response_text);
 
@@ -182,6 +215,7 @@ fn effectivePollingTimeoutSeconds(config: *const Config, next_heartbeat_ms: i64)
 
 fn triggerHeartbeatIfDue(
     allocator: std.mem.Allocator,
+    runtime_state: *RuntimeState,
     config: *const Config,
     config_dir: []const u8,
     next_heartbeat_ms: *i64,
@@ -190,12 +224,31 @@ fn triggerHeartbeatIfDue(
     const now_ms = std.time.milliTimestamp();
     if (now_ms < next_heartbeat_ms.*) return;
 
+    if (!runtime_state.tryBeginAgentTask(.heartbeat)) {
+        const snapshot = runtime_state.snapshot();
+        std.log.info(
+            "heartbeat deferred because agent is busy with task={s}",
+            .{agentTaskName(snapshot.active_task)},
+        );
+        next_heartbeat_ms.* = std.math.add(i64, now_ms, interval_ms) catch std.math.maxInt(i64);
+        runtime_state.setNextHeartbeatMillis(next_heartbeat_ms.*);
+        return;
+    }
+    defer runtime_state.finishAgentTask(.heartbeat);
+
     std.log.info("triggering heartbeat", .{});
+    runtime_state.recordHeartbeatStarted();
     runHeartbeat(allocator, config, config_dir) catch |err| {
+        runtime_state.recordHeartbeatError(err);
         std.log.err("heartbeat error: {}", .{err});
+        next_heartbeat_ms.* = std.math.add(i64, now_ms, interval_ms) catch std.math.maxInt(i64);
+        runtime_state.setNextHeartbeatMillis(next_heartbeat_ms.*);
+        return;
     };
+    runtime_state.recordHeartbeatSuccess();
 
     next_heartbeat_ms.* = std.math.add(i64, now_ms, interval_ms) catch std.math.maxInt(i64);
+    runtime_state.setNextHeartbeatMillis(next_heartbeat_ms.*);
 }
 
 fn heartbeatIntervalMillis(config: *const Config) ?i64 {

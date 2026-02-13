@@ -22,6 +22,9 @@ provider = "google"
 # Omit model to use provider defaults.
 polling_timeout_seconds = 30
 heartbeat_interval_seconds = 300
+web_enabled = true
+web_host = "127.0.0.1"
+web_port = 8787
 ```
 
 Required fields:
@@ -33,11 +36,20 @@ Optional fields:
 - `model` (omit to use provider defaults)
 - `polling_timeout_seconds` (defaults to `30`)
 - `heartbeat_interval_seconds` (defaults to `300`, set `0` or a negative value to disable heartbeat runs)
+- `web_enabled` (defaults to `true`, set `false` to disable the local web UI)
+- `web_host` (defaults to `"127.0.0.1"`)
+- `web_port` (defaults to `8787`)
 
 ## Run
 
 ```bash
 zig build run
+```
+
+When enabled, the local web UI is available at:
+
+```text
+http://127.0.0.1:8787
 ```
 
 Use a custom config path:

@@ -8,6 +8,9 @@ pub const Config = struct {
     model: ?[]u8,
     polling_timeout_seconds: i64,
     heartbeat_interval_seconds: i64,
+    web_enabled: bool,
+    web_host: []u8,
+    web_port: u16,
 
     const ConfigFile = struct {
         telegram_bot_token: ?[]u8 = null,
@@ -16,12 +19,16 @@ pub const Config = struct {
         model: ?[]u8 = null,
         polling_timeout_seconds: ?i64 = null,
         heartbeat_interval_seconds: ?i64 = null,
+        web_enabled: ?bool = null,
+        web_host: ?[]u8 = null,
+        web_port: ?i64 = null,
 
         fn deinit(self: *ConfigFile, allocator: std.mem.Allocator) void {
             if (self.telegram_bot_token) |value| allocator.free(value);
             if (self.pi_executable) |value| allocator.free(value);
             if (self.provider) |value| allocator.free(value);
             if (self.model) |value| allocator.free(value);
+            if (self.web_host) |value| allocator.free(value);
         }
     };
 
@@ -67,6 +74,20 @@ pub const Config = struct {
 
         const polling_timeout_seconds = parsed.polling_timeout_seconds orelse 30;
         const heartbeat_interval_seconds = parsed.heartbeat_interval_seconds orelse 300;
+        const web_enabled = parsed.web_enabled orelse true;
+
+        const web_host = if (parsed.web_host) |value| blk: {
+            parsed.web_host = null;
+            break :blk value;
+        } else try allocator.dupe(u8, "127.0.0.1");
+        errdefer allocator.free(web_host);
+
+        const raw_web_port = parsed.web_port orelse 8787;
+        if (raw_web_port <= 0 or raw_web_port > std.math.maxInt(u16)) {
+            std.log.err("invalid web_port value: {d} (expected 1-65535)", .{raw_web_port});
+            return BotError.InvalidConfigValue;
+        }
+        const web_port: u16 = @intCast(raw_web_port);
 
         return .{
             .telegram_bot_token = telegram_bot_token,
@@ -75,6 +96,9 @@ pub const Config = struct {
             .model = model,
             .polling_timeout_seconds = polling_timeout_seconds,
             .heartbeat_interval_seconds = heartbeat_interval_seconds,
+            .web_enabled = web_enabled,
+            .web_host = web_host,
+            .web_port = web_port,
         };
     }
 
@@ -83,6 +107,7 @@ pub const Config = struct {
         allocator.free(self.pi_executable);
         if (self.provider) |value| allocator.free(value);
         if (self.model) |value| allocator.free(value);
+        allocator.free(self.web_host);
     }
 };
 
@@ -100,6 +125,9 @@ const TargetField = enum {
     model,
     polling_timeout_seconds,
     heartbeat_interval_seconds,
+    web_enabled,
+    web_host,
+    web_port,
 };
 
 fn parseTomlConfig(allocator: std.mem.Allocator, config_bytes: []const u8) !Config.ConfigFile {
@@ -128,6 +156,9 @@ const TomlParser = struct {
         model: bool = false,
         polling_timeout_seconds: bool = false,
         heartbeat_interval_seconds: bool = false,
+        web_enabled: bool = false,
+        web_host: bool = false,
+        web_port: bool = false,
     };
 
     fn parseConfig(self: *TomlParser) !Config.ConfigFile {
@@ -219,6 +250,21 @@ const TomlParser = struct {
                 parsed.heartbeat_interval_seconds = try self.parseIntegerValue();
                 seen.heartbeat_interval_seconds = true;
             },
+            .web_enabled => {
+                if (seen.web_enabled) return error.DuplicateTomlKey;
+                parsed.web_enabled = try self.parseBoolValue();
+                seen.web_enabled = true;
+            },
+            .web_host => {
+                if (seen.web_host) return error.DuplicateTomlKey;
+                parsed.web_host = try self.parseStringValue(self.allocator);
+                seen.web_host = true;
+            },
+            .web_port => {
+                if (seen.web_port) return error.DuplicateTomlKey;
+                parsed.web_port = try self.parseIntegerValue();
+                seen.web_port = true;
+            },
             .none => try self.skipTomlValue(),
         }
 
@@ -261,6 +307,13 @@ const TomlParser = struct {
     fn parseIntegerValue(self: *TomlParser) !i64 {
         const token = try self.parseBareToken();
         return self.parseIntegerToken(token);
+    }
+
+    fn parseBoolValue(self: *TomlParser) !bool {
+        const token = try self.parseBareToken();
+        if (std.mem.eql(u8, token, "true")) return true;
+        if (std.mem.eql(u8, token, "false")) return false;
+        return error.InvalidTomlBoolean;
     }
 
     fn parseStringValue(self: *TomlParser, output_allocator: std.mem.Allocator) ![]u8 {
@@ -722,6 +775,9 @@ fn keySegmentToField(segment: []const u8) TargetField {
     if (std.mem.eql(u8, segment, "model")) return .model;
     if (std.mem.eql(u8, segment, "polling_timeout_seconds")) return .polling_timeout_seconds;
     if (std.mem.eql(u8, segment, "heartbeat_interval_seconds")) return .heartbeat_interval_seconds;
+    if (std.mem.eql(u8, segment, "web_enabled")) return .web_enabled;
+    if (std.mem.eql(u8, segment, "web_host")) return .web_host;
+    if (std.mem.eql(u8, segment, "web_port")) return .web_port;
     return .none;
 }
 
@@ -829,6 +885,9 @@ test "parseTomlConfig parses root keys and ignores unrelated TOML values" {
         \\provider = "opencode"
         \\polling_timeout_seconds = 30
         \\heartbeat_interval_seconds = 120
+        \\web_enabled = false
+        \\web_host = "127.0.0.1"
+        \\web_port = 8787
         \\features = [1, 2, { enabled = true }, 2024-01-01T12:30:00Z]
         \\
     ;
@@ -842,6 +901,9 @@ test "parseTomlConfig parses root keys and ignores unrelated TOML values" {
     try std.testing.expect(parsed.model == null);
     try std.testing.expectEqual(@as(i64, 30), parsed.polling_timeout_seconds.?);
     try std.testing.expectEqual(@as(i64, 120), parsed.heartbeat_interval_seconds.?);
+    try std.testing.expectEqual(false, parsed.web_enabled.?);
+    try std.testing.expectEqualStrings("127.0.0.1", parsed.web_host.?);
+    try std.testing.expectEqual(@as(i64, 8787), parsed.web_port.?);
 }
 
 test "parseTomlConfig supports [zigbot] table and escaped strings" {
@@ -853,6 +915,9 @@ test "parseTomlConfig supports [zigbot] table and escaped strings" {
         \\model = "gemini"
         \\polling_timeout_seconds = 45
         \\heartbeat_interval_seconds = 600
+        \\web_enabled = true
+        \\web_host = "localhost"
+        \\web_port = 9191
         \\
     ;
 
@@ -864,6 +929,9 @@ test "parseTomlConfig supports [zigbot] table and escaped strings" {
     try std.testing.expectEqualStrings("gemini", parsed.model.?);
     try std.testing.expectEqual(@as(i64, 45), parsed.polling_timeout_seconds.?);
     try std.testing.expectEqual(@as(i64, 600), parsed.heartbeat_interval_seconds.?);
+    try std.testing.expectEqual(true, parsed.web_enabled.?);
+    try std.testing.expectEqualStrings("localhost", parsed.web_host.?);
+    try std.testing.expectEqual(@as(i64, 9191), parsed.web_port.?);
 }
 
 test "parseTomlConfig rejects duplicate configured keys" {

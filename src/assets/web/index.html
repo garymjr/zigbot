@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>zigbot local console</title>
+  <style>
+    :root {
+      --bg0: #0f172a;
+      --bg1: #111827;
+      --surface: #1f2937;
+      --surface-2: #111b2f;
+      --text: #f9fafb;
+      --muted: #9ca3af;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --err: #f87171;
+      --accent: #38bdf8;
+      --line: rgba(148, 163, 184, 0.25);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(1200px 600px at 90% -10%, rgba(56, 189, 248, 0.17), transparent 60%),
+        radial-gradient(900px 520px at -5% 0%, rgba(52, 211, 153, 0.15), transparent 60%),
+        linear-gradient(180deg, var(--bg0), var(--bg1));
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(155deg, rgba(17, 27, 47, 0.95), rgba(31, 41, 55, 0.95));
+      backdrop-filter: blur(8px);
+    }
+
+    .title {
+      margin: 0;
+      font-size: 1.3rem;
+      letter-spacing: 0.3px;
+      text-transform: lowercase;
+    }
+
+    .sub {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .badge {
+      font-size: 0.82rem;
+      border-radius: 999px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      background: rgba(30, 41, 59, 0.75);
+      white-space: nowrap;
+    }
+
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .err { color: var(--err); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      grid-column: span 6;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      min-height: 180px;
+    }
+
+    .card.wide {
+      grid-column: span 12;
+      min-height: 280px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 0.95rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+    }
+
+    .kv {
+      margin: 0;
+      display: grid;
+      gap: 6px;
+      font-size: 0.92rem;
+    }
+
+    .kv div {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px dashed rgba(148, 163, 184, 0.12);
+      padding-bottom: 5px;
+    }
+
+    .kv dt {
+      color: var(--muted);
+    }
+
+    .kv dd {
+      margin: 0;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .list {
+      margin: 0;
+      padding-left: 18px;
+      color: #d1d5db;
+    }
+
+    .list li {
+      margin: 6px 0;
+      line-height: 1.2;
+      word-break: break-word;
+    }
+
+    .chat {
+      display: grid;
+      grid-template-rows: 1fr auto;
+      gap: 12px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .chat-log {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface-2);
+      padding: 10px;
+      overflow: auto;
+      min-height: 180px;
+      max-height: 380px;
+      font-size: 0.92rem;
+      line-height: 1.35;
+    }
+
+    .msg {
+      margin: 0 0 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .msg:last-child {
+      margin-bottom: 0;
+    }
+
+    .you { color: #bae6fd; }
+    .bot { color: #d1fae5; }
+    .sys { color: var(--muted); }
+    .bad { color: var(--err); }
+
+    .chat-compose {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      margin: 0;
+      align-items: end;
+    }
+
+    .chat-compose > * {
+      min-width: 0;
+    }
+
+    #chatInput {
+      width: 100%;
+      min-width: 0;
+      min-height: 88px;
+      border-radius: 10px;
+      border: 0;
+      background: #0b1220;
+      color: var(--text);
+      padding: 10px 12px;
+      font: inherit;
+      line-height: 1.35;
+      resize: vertical;
+      outline: none;
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    #chatInput:focus {
+      box-shadow: inset 0 0 0 2px rgba(96, 165, 250, 0.95);
+    }
+
+    button {
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      background: linear-gradient(180deg, rgba(14, 116, 144, 0.9), rgba(8, 47, 73, 0.95));
+      color: #ecfeff;
+      border-radius: 10px;
+      font: inherit;
+      padding: 10px 14px;
+      cursor: pointer;
+    }
+
+    button[disabled] {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    @media (max-width: 860px) {
+      .card {
+        grid-column: span 12;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <div>
+        <h1 class="title">zigbot local console</h1>
+        <p class="sub" id="updatedAt">loading status...</p>
+      </div>
+      <div class="badge-row">
+        <div class="badge" id="badgeAgent">agent: unknown</div>
+        <div class="badge" id="badgeHeartbeat">heartbeat: unknown</div>
+        <div class="badge" id="badgePoll">poll: unknown</div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Bot / Agent Status</h2>
+        <dl class="kv" id="botStatus"></dl>
+      </article>
+
+      <article class="card">
+        <h2>Heartbeat</h2>
+        <dl class="kv" id="heartbeatStatus"></dl>
+      </article>
+
+      <article class="card">
+        <h2>Skills</h2>
+        <ul class="list" id="skillsList"></ul>
+      </article>
+
+      <article class="card">
+        <h2>Extensions</h2>
+        <ul class="list" id="extensionsList"></ul>
+      </article>
+
+      <article class="card wide">
+          <h2>Local Chat</h2>
+          <div class="chat">
+            <div class="chat-log" id="chatLog"></div>
+            <div class="chat-compose" id="chatComposer">
+              <textarea id="chatInput" placeholder="Ask the local agent..." maxlength="4000"></textarea>
+              <button id="chatSend" type="button">Send</button>
+            </div>
+          </div>
+        </article>
+      </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("botStatus");
+    const heartbeatEl = document.getElementById("heartbeatStatus");
+    const skillsEl = document.getElementById("skillsList");
+    const extensionsEl = document.getElementById("extensionsList");
+    const updatedAtEl = document.getElementById("updatedAt");
+    const badgeAgentEl = document.getElementById("badgeAgent");
+    const badgeHeartbeatEl = document.getElementById("badgeHeartbeat");
+    const badgePollEl = document.getElementById("badgePoll");
+    const chatLogEl = document.getElementById("chatLog");
+    const chatInputEl = document.getElementById("chatInput");
+    const chatSendEl = document.getElementById("chatSend");
+
+    const fmtTime = (ms) => {
+      if (!ms || ms <= 0) return "never";
+      return new Date(ms).toLocaleTimeString();
+    };
+
+    const fmtAgo = (ms, nowMs) => {
+      if (!ms || ms <= 0) return "never";
+      const sec = Math.max(0, Math.floor((nowMs - ms) / 1000));
+      if (sec < 60) return `${sec}s ago`;
+      const min = Math.floor(sec / 60);
+      if (min < 60) return `${min}m ago`;
+      const hr = Math.floor(min / 60);
+      return `${hr}h ago`;
+    };
+
+    const makeKv = (rows) =>
+      rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
+
+    const addLog = (klass, prefix, text) => {
+      const p = document.createElement("p");
+      p.className = `msg ${klass}`;
+      p.textContent = `${prefix}${text}`;
+      chatLogEl.appendChild(p);
+      chatLogEl.scrollTop = chatLogEl.scrollHeight;
+    };
+
+    async function fetchJson(url, opts) {
+      const res = await fetch(url, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data && data.error ? data.error : `request failed (${res.status})`;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    function renderStringList(el, values) {
+      if (!values || values.length === 0) {
+        el.innerHTML = "<li>(none found)</li>";
+        return;
+      }
+      el.innerHTML = values.map((v) => `<li>${v}</li>`).join("");
+    }
+
+    function setBadge(el, text, kind) {
+      el.className = `badge ${kind || ""}`.trim();
+      el.textContent = text;
+    }
+
+    async function refreshStatus() {
+      try {
+        const s = await fetchJson("/api/status");
+        const now = s.now_ms;
+        const heartbeatNext = s.next_heartbeat_ms ? fmtAgo(s.next_heartbeat_ms, now).replace("ago", "from now") : "disabled";
+        const activeFor = s.agent_busy ? `${Math.max(0, Math.floor((now - s.active_task_started_ms) / 1000))}s` : "0s";
+
+        updatedAtEl.textContent = `updated ${new Date(now).toLocaleTimeString()} (${s.uptime_seconds}s uptime)`;
+
+        statusEl.innerHTML = makeKv([
+          ["Agent Busy", s.agent_busy ? "yes" : "no"],
+          ["Active Task", s.active_task],
+          ["Active For", activeFor],
+          ["Telegram Messages", String(s.telegram_message_count)],
+          ["Web Chats", String(s.web_chat_count)],
+          ["Last Poll", `${fmtTime(s.last_poll_ms)} (${fmtAgo(s.last_poll_ms, now)})`],
+          ["Poll Errors", String(s.poll_error_count)],
+          ["Last Poll Error", s.last_poll_error || "(none)"]
+        ]);
+
+        heartbeatEl.innerHTML = makeKv([
+          ["Next Heartbeat", heartbeatNext],
+          ["Runs", String(s.heartbeat_run_count)],
+          ["Errors", String(s.heartbeat_error_count)],
+          ["Last Start", `${fmtTime(s.last_heartbeat_started_ms)} (${fmtAgo(s.last_heartbeat_started_ms, now)})`],
+          ["Last Finish", `${fmtTime(s.last_heartbeat_finished_ms)} (${fmtAgo(s.last_heartbeat_finished_ms, now)})`],
+          ["Last Result", s.last_heartbeat_ok ? "ok" : "error"],
+          ["Last Error", s.last_heartbeat_error || "(none)"],
+          ["Last Web Chat Duration", `${s.last_web_chat_duration_ms}ms`]
+        ]);
+
+        setBadge(
+          badgeAgentEl,
+          s.agent_busy ? `agent: busy (${s.active_task})` : "agent: idle",
+          s.agent_busy ? "warn" : "ok"
+        );
+        setBadge(
+          badgeHeartbeatEl,
+          s.last_heartbeat_ok ? "heartbeat: ok" : "heartbeat: error",
+          s.last_heartbeat_ok ? "ok" : "err"
+        );
+        setBadge(
+          badgePollEl,
+          s.last_poll_ok ? "poll: ok" : "poll: error",
+          s.last_poll_ok ? "ok" : "err"
+        );
+      } catch (err) {
+        updatedAtEl.textContent = `status unavailable: ${err.message}`;
+        setBadge(badgeAgentEl, "agent: unavailable", "err");
+        setBadge(badgeHeartbeatEl, "heartbeat: unavailable", "err");
+        setBadge(badgePollEl, "poll: unavailable", "err");
+      }
+    }
+
+    async function refreshStaticLists() {
+      try {
+        const skills = await fetchJson("/api/skills");
+        renderStringList(skillsEl, skills.skills);
+      } catch (err) {
+        renderStringList(skillsEl, [`error: ${err.message}`]);
+      }
+
+      try {
+        const extensions = await fetchJson("/api/extensions");
+        renderStringList(extensionsEl, extensions.extensions);
+      } catch (err) {
+        renderStringList(extensionsEl, [`error: ${err.message}`]);
+      }
+    }
+
+    async function submitChat() {
+      const rawText = chatInputEl.value;
+      if (!rawText.trim()) return;
+
+      chatSendEl.disabled = true;
+      chatInputEl.disabled = true;
+      addLog("you", "you: ", rawText);
+      chatInputEl.value = "";
+
+      try {
+        const res = await fetchJson("/api/chat", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: rawText }),
+        });
+        addLog("bot", "bot: ", res.response || "(empty response)");
+      } catch (err) {
+        addLog("bad", "error: ", err.message);
+      } finally {
+        chatSendEl.disabled = false;
+        chatInputEl.disabled = false;
+        chatInputEl.focus();
+        refreshStatus();
+      }
+    }
+
+    chatSendEl.addEventListener("click", () => {
+      submitChat();
+    });
+
+    addLog("sys", "", "local chat ready, telegram remains the primary interface.");
+    refreshStatus();
+    refreshStaticLists();
+    setInterval(refreshStatus, 3000);
+    setInterval(refreshStaticLists, 30000);
+  </script>
+</body>
+</html>
