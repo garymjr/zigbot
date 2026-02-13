@@ -11,13 +11,18 @@ pub fn askPi(
     config: *const Config,
     config_dir: []const u8,
     prompt: []const u8,
+    replied_message: ?[]const u8,
 ) ![]u8 {
     std.log.info("askPi: creating agent session", .{});
 
     var created = try createIsolatedAgentSession(allocator, config, config_dir);
     defer created.session.dispose();
 
-    const contextual_prompt = try std.fmt.allocPrint(
+    const contextual_prompt = if (replied_message) |reply| try std.fmt.allocPrint(
+        allocator,
+        "Runtime context:\n- Config directory: {s}\n- AGENTS file path (if present): {s}/AGENTS.md\n- Skills directory (if present): {s}/skills\n\nTelegram conversation context:\n- User message:\n{s}\n\n- Message being replied to:\n{s}",
+        .{ config_dir, config_dir, config_dir, prompt, reply },
+    ) else try std.fmt.allocPrint(
         allocator,
         "Runtime context:\n- Config directory: {s}\n- AGENTS file path (if present): {s}/AGENTS.md\n- Skills directory (if present): {s}/skills\n\nUser message:\n{s}",
         .{ config_dir, config_dir, config_dir, prompt },

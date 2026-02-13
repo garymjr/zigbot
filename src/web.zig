@@ -267,7 +267,7 @@ fn serveChat(context: *ServerContext, request: *std.http.Server.Request) !void {
     defer context.status.finishAgentTask(.web_chat);
 
     const started_ms = std.time.milliTimestamp();
-    const response_text = askPi(arena, context.config, context.config_dir, prompt) catch |err| {
+    const response_text = askPi(arena, context.config, context.config_dir, prompt, null) catch |err| {
         const duration_ms = std.time.milliTimestamp() - started_ms;
         const err_name = @errorName(err);
         context.status.recordWebChatError(prompt, err_name, duration_ms);

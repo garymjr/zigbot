@@ -156,6 +156,10 @@ fn handlePollCycle(
         const message = update.message orelse continue;
         const user_text = message.text orelse continue;
         if (user_text.len == 0) continue;
+        const replied_text = if (message.reply_to_message) |reply|
+            reply.text orelse reply.caption
+        else
+            null;
         runtime_state.recordTelegramMessage();
 
         std.log.info("incoming message chat_id={d}, update_id={d}", .{ message.chat.id, update.update_id });
@@ -174,7 +178,7 @@ fn handlePollCycle(
             }
             defer runtime_state.finishAgentTask(.telegram);
 
-            break :response askPi(allocator, config, config_dir, user_text) catch |err| blk: {
+            break :response askPi(allocator, config, config_dir, user_text, replied_text) catch |err| blk: {
                 std.log.err("pi request failed: {}", .{err});
                 break :blk try allocator.dupe(
                     u8,

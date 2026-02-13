@@ -15,6 +15,13 @@ const TelegramUpdate = struct {
 const TelegramMessage = struct {
     chat: TelegramChat,
     text: ?[]const u8 = null,
+    caption: ?[]const u8 = null,
+    reply_to_message: ?TelegramReplyMessage = null,
+};
+
+const TelegramReplyMessage = struct {
+    text: ?[]const u8 = null,
+    caption: ?[]const u8 = null,
 };
 
 const TelegramChat = struct {
