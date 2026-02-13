@@ -117,11 +117,12 @@ pub fn run() !void {
     }
 
     std.log.info("zigbot started", .{});
-    std.log.info("waiting for Telegram messages...", .{});
 
     var next_update_offset: i64 = 0;
     var next_heartbeat_ms = initialNextHeartbeatMillis(&config);
     runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
+    triggerHeartbeatIfDue(allocator, &runtime_state, &config, config_dir, &next_heartbeat_ms);
+    std.log.info("waiting for Telegram messages...", .{});
     while (!shutdown_requested.load(.acquire)) {
         const poll_timeout_seconds = effectivePollingTimeoutSeconds(&config, next_heartbeat_ms);
         handlePollCycle(allocator, &runtime_state, &config, config_dir, &telegram, &next_update_offset, poll_timeout_seconds) catch |err| {
@@ -244,9 +245,8 @@ fn trimForTelegram(text: []const u8) []const u8 {
 }
 
 fn initialNextHeartbeatMillis(config: *const Config) i64 {
-    const interval_ms = heartbeatIntervalMillis(config) orelse return std.math.maxInt(i64);
-    const now_ms = std.time.milliTimestamp();
-    return std.math.add(i64, now_ms, interval_ms) catch std.math.maxInt(i64);
+    _ = heartbeatIntervalMillis(config) orelse return std.math.maxInt(i64);
+    return std.time.milliTimestamp();
 }
 
 fn effectivePollingTimeoutSeconds(config: *const Config, next_heartbeat_ms: i64) i64 {
