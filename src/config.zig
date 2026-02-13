@@ -7,6 +7,7 @@ pub const Config = struct {
     provider: ?[]u8,
     model: ?[]u8,
     polling_timeout_seconds: i64,
+    heartbeat_interval_seconds: i64,
 
     const ConfigFile = struct {
         telegram_bot_token: ?[]u8 = null,
@@ -14,6 +15,7 @@ pub const Config = struct {
         provider: ?[]u8 = null,
         model: ?[]u8 = null,
         polling_timeout_seconds: ?i64 = null,
+        heartbeat_interval_seconds: ?i64 = null,
 
         fn deinit(self: *ConfigFile, allocator: std.mem.Allocator) void {
             if (self.telegram_bot_token) |value| allocator.free(value);
@@ -64,6 +66,7 @@ pub const Config = struct {
         errdefer if (model) |value| allocator.free(value);
 
         const polling_timeout_seconds = parsed.polling_timeout_seconds orelse 30;
+        const heartbeat_interval_seconds = parsed.heartbeat_interval_seconds orelse 300;
 
         return .{
             .telegram_bot_token = telegram_bot_token,
@@ -71,6 +74,7 @@ pub const Config = struct {
             .provider = provider,
             .model = model,
             .polling_timeout_seconds = polling_timeout_seconds,
+            .heartbeat_interval_seconds = heartbeat_interval_seconds,
         };
     }
 
@@ -95,6 +99,7 @@ const TargetField = enum {
     provider,
     model,
     polling_timeout_seconds,
+    heartbeat_interval_seconds,
 };
 
 fn parseTomlConfig(allocator: std.mem.Allocator, config_bytes: []const u8) !Config.ConfigFile {
@@ -122,6 +127,7 @@ const TomlParser = struct {
         provider: bool = false,
         model: bool = false,
         polling_timeout_seconds: bool = false,
+        heartbeat_interval_seconds: bool = false,
     };
 
     fn parseConfig(self: *TomlParser) !Config.ConfigFile {
@@ -207,6 +213,11 @@ const TomlParser = struct {
                 if (seen.polling_timeout_seconds) return error.DuplicateTomlKey;
                 parsed.polling_timeout_seconds = try self.parseIntegerValue();
                 seen.polling_timeout_seconds = true;
+            },
+            .heartbeat_interval_seconds => {
+                if (seen.heartbeat_interval_seconds) return error.DuplicateTomlKey;
+                parsed.heartbeat_interval_seconds = try self.parseIntegerValue();
+                seen.heartbeat_interval_seconds = true;
             },
             .none => try self.skipTomlValue(),
         }
@@ -710,6 +721,7 @@ fn keySegmentToField(segment: []const u8) TargetField {
     if (std.mem.eql(u8, segment, "provider")) return .provider;
     if (std.mem.eql(u8, segment, "model")) return .model;
     if (std.mem.eql(u8, segment, "polling_timeout_seconds")) return .polling_timeout_seconds;
+    if (std.mem.eql(u8, segment, "heartbeat_interval_seconds")) return .heartbeat_interval_seconds;
     return .none;
 }
 
@@ -816,6 +828,7 @@ test "parseTomlConfig parses root keys and ignores unrelated TOML values" {
         \\pi_executable = "pi"
         \\provider = "opencode"
         \\polling_timeout_seconds = 30
+        \\heartbeat_interval_seconds = 120
         \\features = [1, 2, { enabled = true }, 2024-01-01T12:30:00Z]
         \\
     ;
@@ -828,6 +841,7 @@ test "parseTomlConfig parses root keys and ignores unrelated TOML values" {
     try std.testing.expectEqualStrings("opencode", parsed.provider.?);
     try std.testing.expect(parsed.model == null);
     try std.testing.expectEqual(@as(i64, 30), parsed.polling_timeout_seconds.?);
+    try std.testing.expectEqual(@as(i64, 120), parsed.heartbeat_interval_seconds.?);
 }
 
 test "parseTomlConfig supports [zigbot] table and escaped strings" {
@@ -838,6 +852,7 @@ test "parseTomlConfig supports [zigbot] table and escaped strings" {
         \\provider = "google"
         \\model = "gemini"
         \\polling_timeout_seconds = 45
+        \\heartbeat_interval_seconds = 600
         \\
     ;
 
@@ -848,6 +863,7 @@ test "parseTomlConfig supports [zigbot] table and escaped strings" {
     try std.testing.expectEqualStrings("google", parsed.provider.?);
     try std.testing.expectEqualStrings("gemini", parsed.model.?);
     try std.testing.expectEqual(@as(i64, 45), parsed.polling_timeout_seconds.?);
+    try std.testing.expectEqual(@as(i64, 600), parsed.heartbeat_interval_seconds.?);
 }
 
 test "parseTomlConfig rejects duplicate configured keys" {
