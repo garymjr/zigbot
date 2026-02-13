@@ -3,6 +3,7 @@ const BotError = @import("errors.zig").BotError;
 
 pub const Config = struct {
     telegram_bot_token: []u8,
+    owner_chat_id: ?i64,
     pi_executable: []u8,
     provider: ?[]u8,
     model: ?[]u8,
@@ -14,6 +15,7 @@ pub const Config = struct {
 
     const ConfigFile = struct {
         telegram_bot_token: ?[]u8 = null,
+        owner_chat_id: ?i64 = null,
         pi_executable: ?[]u8 = null,
         provider: ?[]u8 = null,
         model: ?[]u8 = null,
@@ -54,6 +56,8 @@ pub const Config = struct {
         parsed.telegram_bot_token = null;
         errdefer allocator.free(telegram_bot_token);
 
+        const owner_chat_id = parsed.owner_chat_id;
+
         const pi_executable = if (parsed.pi_executable) |value| blk: {
             parsed.pi_executable = null;
             break :blk value;
@@ -91,6 +95,7 @@ pub const Config = struct {
 
         return .{
             .telegram_bot_token = telegram_bot_token,
+            .owner_chat_id = owner_chat_id,
             .pi_executable = pi_executable,
             .provider = provider,
             .model = model,
@@ -120,6 +125,7 @@ const TableContext = enum {
 const TargetField = enum {
     none,
     telegram_bot_token,
+    owner_chat_id,
     pi_executable,
     provider,
     model,
@@ -151,6 +157,7 @@ const TomlParser = struct {
 
     const SeenFields = struct {
         telegram_bot_token: bool = false,
+        owner_chat_id: bool = false,
         pi_executable: bool = false,
         provider: bool = false,
         model: bool = false,
@@ -224,6 +231,11 @@ const TomlParser = struct {
                 if (seen.telegram_bot_token) return error.DuplicateTomlKey;
                 parsed.telegram_bot_token = try self.parseStringValue(self.allocator);
                 seen.telegram_bot_token = true;
+            },
+            .owner_chat_id => {
+                if (seen.owner_chat_id) return error.DuplicateTomlKey;
+                parsed.owner_chat_id = try self.parseIntegerValue();
+                seen.owner_chat_id = true;
             },
             .pi_executable => {
                 if (seen.pi_executable) return error.DuplicateTomlKey;
@@ -770,6 +782,7 @@ fn resolveTargetField(table_context: TableContext, key_segments: []const []const
 
 fn keySegmentToField(segment: []const u8) TargetField {
     if (std.mem.eql(u8, segment, "telegram_bot_token")) return .telegram_bot_token;
+    if (std.mem.eql(u8, segment, "owner_chat_id")) return .owner_chat_id;
     if (std.mem.eql(u8, segment, "pi_executable")) return .pi_executable;
     if (std.mem.eql(u8, segment, "provider")) return .provider;
     if (std.mem.eql(u8, segment, "model")) return .model;
@@ -881,6 +894,7 @@ test "parseTomlConfig parses root keys and ignores unrelated TOML values" {
     const allocator = std.testing.allocator;
     const input =
         \\telegram_bot_token = "123:abc"
+        \\owner_chat_id = 8410132204
         \\pi_executable = "pi"
         \\provider = "opencode"
         \\polling_timeout_seconds = 30
@@ -896,6 +910,7 @@ test "parseTomlConfig parses root keys and ignores unrelated TOML values" {
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqualStrings("123:abc", parsed.telegram_bot_token.?);
+    try std.testing.expectEqual(@as(i64, 8410132204), parsed.owner_chat_id.?);
     try std.testing.expectEqualStrings("pi", parsed.pi_executable.?);
     try std.testing.expectEqualStrings("opencode", parsed.provider.?);
     try std.testing.expect(parsed.model == null);
@@ -911,6 +926,7 @@ test "parseTomlConfig supports [zigbot] table and escaped strings" {
     const input =
         \\[zigbot]
         \\telegram_bot_token = "line1\nline2"
+        \\owner_chat_id = 123456
         \\provider = "google"
         \\model = "gemini"
         \\polling_timeout_seconds = 45
@@ -925,6 +941,7 @@ test "parseTomlConfig supports [zigbot] table and escaped strings" {
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqualStrings("line1\nline2", parsed.telegram_bot_token.?);
+    try std.testing.expectEqual(@as(i64, 123456), parsed.owner_chat_id.?);
     try std.testing.expectEqualStrings("google", parsed.provider.?);
     try std.testing.expectEqualStrings("gemini", parsed.model.?);
     try std.testing.expectEqual(@as(i64, 45), parsed.polling_timeout_seconds.?);

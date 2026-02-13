@@ -17,6 +17,7 @@ Create `~/.config/zigbot/config.toml`:
 
 ```toml
 telegram_bot_token = "123456:abc..."
+owner_chat_id = 8410132204
 pi_executable = "pi"
 provider = "google"
 # Omit model to use provider defaults.
@@ -31,6 +32,7 @@ Required fields:
 - `telegram_bot_token`
 
 Optional fields:
+- `owner_chat_id` (when set, zigbot only responds to this Telegram `chat.id`)
 - `pi_executable` (defaults to `"pi"`)
 - `provider`
 - `model` (omit to use provider defaults)

@@ -62,6 +62,11 @@ pub fn run() !void {
     std.log.info("config path: {s}", .{config_path});
     std.log.info("agent dir: {s}", .{config_dir});
     std.log.info("heartbeat interval (seconds): {d}", .{config.heartbeat_interval_seconds});
+    if (config.owner_chat_id) |owner_chat_id| {
+        std.log.info("owner chat restriction enabled for chat_id={d}", .{owner_chat_id});
+    } else {
+        std.log.info("owner chat restriction disabled", .{});
+    }
 
     try ensureSecretsExtensionInstalled(allocator, config_dir);
 
@@ -154,6 +159,15 @@ fn handlePollCycle(
         }
 
         const message = update.message orelse continue;
+        if (config.owner_chat_id) |owner_chat_id| {
+            if (message.chat.id != owner_chat_id) {
+                std.log.info(
+                    "ignoring message from unauthorized chat_id={d}, expected owner_chat_id={d}",
+                    .{ message.chat.id, owner_chat_id },
+                );
+                continue;
+            }
+        }
         const user_text = message.text orelse continue;
         if (user_text.len == 0) continue;
         const replied_text = if (message.reply_to_message) |reply|
