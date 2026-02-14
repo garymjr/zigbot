@@ -16,8 +16,6 @@ Simple Telegram bot in Zig:
 Create `~/.config/zigbot/config.toml`:
 
 ```toml
-telegram_bot_token = "123456:abc..."
-owner_chat_id = 8410132204
 pi_executable = "pi"
 provider = "google"
 # Omit model to use provider defaults.
@@ -29,10 +27,10 @@ web_port = 8787
 ```
 
 Required fields:
-- `telegram_bot_token`
+- `telegram_bot_token` or environment variable `ZIGBOT_TELEGRAM_BOT_TOKEN`
 
 Optional fields:
-- `owner_chat_id` (when set, zigbot only responds to this Telegram `chat.id`)
+- `owner_chat_id` (or environment variable `ZIGBOT_OWNER_CHAT_ID`, when set zigbot only responds to this Telegram `chat.id`)
 - `pi_executable` (defaults to `"pi"`)
 - `provider`
 - `model` (omit to use provider defaults)
@@ -41,6 +39,8 @@ Optional fields:
 - `web_enabled` (defaults to `true`, set `false` to disable the local web UI while keeping status endpoints available)
 - `web_host` (defaults to `"127.0.0.1"`)
 - `web_port` (defaults to `8787`)
+
+If both TOML and env vars are set for the same field, TOML wins.
 
 ## Run
 

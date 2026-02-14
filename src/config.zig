@@ -1,6 +1,9 @@
 const std = @import("std");
 const BotError = @import("errors.zig").BotError;
 
+const telegram_bot_token_env_var = "ZIGBOT_TELEGRAM_BOT_TOKEN";
+const owner_chat_id_env_var = "ZIGBOT_OWNER_CHAT_ID";
+
 pub const Config = struct {
     telegram_bot_token: []u8,
     owner_chat_id: ?i64,
@@ -49,14 +52,24 @@ pub const Config = struct {
         };
         defer parsed.deinit(allocator);
 
-        const telegram_bot_token = parsed.telegram_bot_token orelse {
-            std.log.err("missing required config field: telegram_bot_token", .{});
-            return BotError.MissingRequiredConfigField;
+        var env_telegram_bot_token = try getEnvVarOwnedIfPresent(allocator, telegram_bot_token_env_var);
+        defer if (env_telegram_bot_token) |value| allocator.free(value);
+
+        const telegram_bot_token = takeTelegramBotToken(&parsed, &env_telegram_bot_token) catch |err| {
+            if (err == BotError.MissingRequiredConfigField) {
+                std.log.err(
+                    "missing required config field: telegram_bot_token (or environment variable {s})",
+                    .{telegram_bot_token_env_var},
+                );
+            }
+            return err;
         };
-        parsed.telegram_bot_token = null;
         errdefer allocator.free(telegram_bot_token);
 
-        const owner_chat_id = parsed.owner_chat_id;
+        const owner_chat_id = if (parsed.owner_chat_id) |value|
+            value
+        else
+            try parseOptionalOwnerChatIdFromEnv(allocator);
 
         const pi_executable = if (parsed.pi_executable) |value| blk: {
             parsed.pi_executable = null;
@@ -794,6 +807,53 @@ fn keySegmentToField(segment: []const u8) TargetField {
     return .none;
 }
 
+fn getEnvVarOwnedIfPresent(allocator: std.mem.Allocator, key: []const u8) !?[]u8 {
+    return std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => {
+            std.log.err("failed reading environment variable {s}: {}", .{ key, err });
+            return err;
+        },
+    };
+}
+
+fn parseOwnerChatIdEnvValue(value: []const u8) error{InvalidOwnerChatId}!i64 {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidOwnerChatId;
+    return std.fmt.parseInt(i64, trimmed, 10) catch error.InvalidOwnerChatId;
+}
+
+fn parseOptionalOwnerChatIdFromEnv(allocator: std.mem.Allocator) !?i64 {
+    const env_owner_chat_id = try getEnvVarOwnedIfPresent(allocator, owner_chat_id_env_var);
+    defer if (env_owner_chat_id) |value| allocator.free(value);
+
+    if (env_owner_chat_id) |value| {
+        return parseOwnerChatIdEnvValue(value) catch {
+            std.log.err(
+                "invalid environment variable {s}: {s} (expected signed integer)",
+                .{ owner_chat_id_env_var, value },
+            );
+            return BotError.InvalidConfigValue;
+        };
+    }
+
+    return null;
+}
+
+fn takeTelegramBotToken(parsed: *Config.ConfigFile, env_telegram_bot_token: *?[]u8) ![]u8 {
+    if (parsed.telegram_bot_token) |value| {
+        parsed.telegram_bot_token = null;
+        return value;
+    }
+
+    if (env_telegram_bot_token.*) |value| {
+        env_telegram_bot_token.* = null;
+        return value;
+    }
+
+    return BotError.MissingRequiredConfigField;
+}
+
 fn isTomlValueDelimiter(ch: u8) bool {
     return ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == ',' or ch == ']' or ch == '}' or ch == '#';
 }
@@ -960,4 +1020,58 @@ test "parseTomlConfig rejects duplicate configured keys" {
     ;
 
     try std.testing.expectError(error.DuplicateTomlKey, parseTomlConfig(allocator, input));
+}
+
+test "takeTelegramBotToken prefers config value over environment fallback" {
+    const allocator = std.testing.allocator;
+
+    var parsed: Config.ConfigFile = .{
+        .telegram_bot_token = try allocator.dupe(u8, "config-token"),
+    };
+    defer parsed.deinit(allocator);
+
+    var env_telegram_bot_token: ?[]u8 = try allocator.dupe(u8, "env-token");
+    defer if (env_telegram_bot_token) |value| allocator.free(value);
+
+    const token = try takeTelegramBotToken(&parsed, &env_telegram_bot_token);
+    defer allocator.free(token);
+
+    try std.testing.expectEqualStrings("config-token", token);
+    try std.testing.expect(env_telegram_bot_token != null);
+}
+
+test "takeTelegramBotToken uses environment fallback when config token is missing" {
+    const allocator = std.testing.allocator;
+
+    var parsed: Config.ConfigFile = .{};
+    defer parsed.deinit(allocator);
+
+    var env_telegram_bot_token: ?[]u8 = try allocator.dupe(u8, "env-token");
+    defer if (env_telegram_bot_token) |value| allocator.free(value);
+
+    const token = try takeTelegramBotToken(&parsed, &env_telegram_bot_token);
+    defer allocator.free(token);
+
+    try std.testing.expectEqualStrings("env-token", token);
+    try std.testing.expect(env_telegram_bot_token == null);
+}
+
+test "takeTelegramBotToken errors when config and environment token are both missing" {
+    const allocator = std.testing.allocator;
+
+    var parsed: Config.ConfigFile = .{};
+    defer parsed.deinit(allocator);
+
+    var env_telegram_bot_token: ?[]u8 = null;
+    try std.testing.expectError(BotError.MissingRequiredConfigField, takeTelegramBotToken(&parsed, &env_telegram_bot_token));
+}
+
+test "parseOwnerChatIdEnvValue parses trimmed signed integer values" {
+    try std.testing.expectEqual(@as(i64, 8410132204), try parseOwnerChatIdEnvValue("  8410132204 \n"));
+    try std.testing.expectEqual(@as(i64, -42), try parseOwnerChatIdEnvValue("-42"));
+}
+
+test "parseOwnerChatIdEnvValue rejects invalid values" {
+    try std.testing.expectError(error.InvalidOwnerChatId, parseOwnerChatIdEnvValue(""));
+    try std.testing.expectError(error.InvalidOwnerChatId, parseOwnerChatIdEnvValue("abc123"));
 }
