@@ -23,6 +23,7 @@ polling_timeout_seconds = 30
 heartbeat_interval_seconds = 300
 heartbeat_wait_timeout_seconds = 300
 ask_pi_wait_timeout_seconds = 1800
+pi_session_ttl_seconds = 0
 web_enabled = true
 web_host = "127.0.0.1"
 web_port = 8787
@@ -40,6 +41,7 @@ Optional fields:
 - `heartbeat_interval_seconds` (defaults to `300`, set `0` or a negative value to disable heartbeat runs)
 - `heartbeat_wait_timeout_seconds` (defaults to `300`, set `0` or a negative value to disable heartbeat wait timeout)
 - `ask_pi_wait_timeout_seconds` (defaults to `1800`, set `0` or a negative value to disable askPi wait timeout)
+- `pi_session_ttl_seconds` (defaults to `0`, set to a positive value to reuse a single Pi session for that max age in seconds)
 - `web_enabled` (defaults to `true`, set `false` to disable the local web UI while keeping status endpoints available)
 - `web_host` (defaults to `"127.0.0.1"`)
 - `web_port` (defaults to `8787`)
@@ -64,6 +66,8 @@ Status endpoints are always available (even when `web_enabled = false`):
 GET /api/status
 GET /healthz
 ```
+
+The web service is diagnostics-only, it does not accept chat prompts.
 
 Use a custom config path:
 
@@ -93,7 +97,7 @@ zig build check
 
 ## Notes
 
-- This implementation is intentionally simple and stateless per incoming message.
+- By default this implementation is stateless per incoming message (`pi_session_ttl_seconds = 0`).
 - Only plain text Telegram messages are processed.
 - Zigbot passes the config file directory to Pi as the agent directory.
 - Put optional agent instructions at `~/.config/zigbot/AGENTS.md` (or alongside a custom `config.toml` path).

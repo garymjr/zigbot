@@ -3,13 +3,10 @@ const std = @import("std");
 pub const AgentTask = enum {
     none,
     telegram,
-    web_chat,
     heartbeat,
 };
 
 const maxErrorTextLen = 160;
-const maxPromptLen = 220;
-const maxResponseLen = 420;
 
 pub const Snapshot = struct {
     captured_ms: i64 = 0,
@@ -28,8 +25,6 @@ pub const Snapshot = struct {
     telegram_send_error_count: u64 = 0,
     last_telegram_error: [maxErrorTextLen]u8 = [_]u8{0} ** maxErrorTextLen,
     last_telegram_error_len: usize = 0,
-    web_chat_count: u64 = 0,
-    web_chat_busy_reject_count: u64 = 0,
     heartbeat_deferred_count: u64 = 0,
 
     heartbeat_run_count: u64 = 0,
@@ -44,34 +39,12 @@ pub const Snapshot = struct {
     active_task: AgentTask = .none,
     active_task_started_ms: i64 = 0,
 
-    last_web_chat_ms: i64 = 0,
-    last_web_chat_duration_ms: i64 = 0,
-    last_web_chat_ok: bool = true,
-    last_web_prompt: [maxPromptLen]u8 = [_]u8{0} ** maxPromptLen,
-    last_web_prompt_len: usize = 0,
-    last_web_response: [maxResponseLen]u8 = [_]u8{0} ** maxResponseLen,
-    last_web_response_len: usize = 0,
-    last_web_error: [maxErrorTextLen]u8 = [_]u8{0} ** maxErrorTextLen,
-    last_web_error_len: usize = 0,
-
     pub fn pollError(self: *const Snapshot) []const u8 {
         return self.last_poll_error[0..self.last_poll_error_len];
     }
 
     pub fn heartbeatError(self: *const Snapshot) []const u8 {
         return self.last_heartbeat_error[0..self.last_heartbeat_error_len];
-    }
-
-    pub fn webPrompt(self: *const Snapshot) []const u8 {
-        return self.last_web_prompt[0..self.last_web_prompt_len];
-    }
-
-    pub fn webResponse(self: *const Snapshot) []const u8 {
-        return self.last_web_response[0..self.last_web_response_len];
-    }
-
-    pub fn webError(self: *const Snapshot) []const u8 {
-        return self.last_web_error[0..self.last_web_error_len];
     }
 
     pub fn telegramError(self: *const Snapshot) []const u8 {
@@ -97,8 +70,6 @@ pub const RuntimeState = struct {
     telegram_send_error_count: u64 = 0,
     last_telegram_error: [maxErrorTextLen]u8 = [_]u8{0} ** maxErrorTextLen,
     last_telegram_error_len: usize = 0,
-    web_chat_count: u64 = 0,
-    web_chat_busy_reject_count: u64 = 0,
     heartbeat_deferred_count: u64 = 0,
 
     heartbeat_run_count: u64 = 0,
@@ -112,16 +83,6 @@ pub const RuntimeState = struct {
     agent_busy: bool = false,
     active_task: AgentTask = .none,
     active_task_started_ms: i64 = 0,
-
-    last_web_chat_ms: i64 = 0,
-    last_web_chat_duration_ms: i64 = 0,
-    last_web_chat_ok: bool = true,
-    last_web_prompt: [maxPromptLen]u8 = [_]u8{0} ** maxPromptLen,
-    last_web_prompt_len: usize = 0,
-    last_web_response: [maxResponseLen]u8 = [_]u8{0} ** maxResponseLen,
-    last_web_response_len: usize = 0,
-    last_web_error: [maxErrorTextLen]u8 = [_]u8{0} ** maxErrorTextLen,
-    last_web_error_len: usize = 0,
 
     pub fn init() RuntimeState {
         return .{
@@ -235,36 +196,6 @@ pub const RuntimeState = struct {
         self.heartbeat_deferred_count += 1;
     }
 
-    pub fn recordWebChatSuccess(self: *RuntimeState, prompt: []const u8, response: []const u8, duration_ms: i64) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.web_chat_count += 1;
-        self.last_web_chat_ms = std.time.milliTimestamp();
-        self.last_web_chat_duration_ms = duration_ms;
-        self.last_web_chat_ok = true;
-        writeTruncated(&self.last_web_prompt, &self.last_web_prompt_len, prompt);
-        writeTruncated(&self.last_web_response, &self.last_web_response_len, response);
-        self.last_web_error_len = 0;
-    }
-
-    pub fn recordWebChatError(self: *RuntimeState, prompt: []const u8, err_text: []const u8, duration_ms: i64) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.web_chat_count += 1;
-        self.last_web_chat_ms = std.time.milliTimestamp();
-        self.last_web_chat_duration_ms = duration_ms;
-        self.last_web_chat_ok = false;
-        writeTruncated(&self.last_web_prompt, &self.last_web_prompt_len, prompt);
-        self.last_web_response_len = 0;
-        writeTruncated(&self.last_web_error, &self.last_web_error_len, err_text);
-    }
-
-    pub fn recordWebChatBusyReject(self: *RuntimeState) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.web_chat_busy_reject_count += 1;
-    }
-
     pub fn snapshot(self: *RuntimeState) Snapshot {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -284,8 +215,6 @@ pub const RuntimeState = struct {
             .telegram_send_error_count = self.telegram_send_error_count,
             .last_telegram_error = self.last_telegram_error,
             .last_telegram_error_len = self.last_telegram_error_len,
-            .web_chat_count = self.web_chat_count,
-            .web_chat_busy_reject_count = self.web_chat_busy_reject_count,
             .heartbeat_deferred_count = self.heartbeat_deferred_count,
             .heartbeat_run_count = self.heartbeat_run_count,
             .heartbeat_error_count = self.heartbeat_error_count,
@@ -297,15 +226,6 @@ pub const RuntimeState = struct {
             .agent_busy = self.agent_busy,
             .active_task = self.active_task,
             .active_task_started_ms = self.active_task_started_ms,
-            .last_web_chat_ms = self.last_web_chat_ms,
-            .last_web_chat_duration_ms = self.last_web_chat_duration_ms,
-            .last_web_chat_ok = self.last_web_chat_ok,
-            .last_web_prompt = self.last_web_prompt,
-            .last_web_prompt_len = self.last_web_prompt_len,
-            .last_web_response = self.last_web_response,
-            .last_web_response_len = self.last_web_response_len,
-            .last_web_error = self.last_web_error,
-            .last_web_error_len = self.last_web_error_len,
         };
     }
 };
@@ -314,7 +234,6 @@ pub fn agentTaskName(task: AgentTask) []const u8 {
     return switch (task) {
         .none => "none",
         .telegram => "telegram",
-        .web_chat => "web_chat",
         .heartbeat => "heartbeat",
     };
 }

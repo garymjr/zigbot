@@ -8,26 +8,88 @@ const setProcessGroupAndExecScript =
     "import os,sys; os.setpgrp(); os.execvp(sys.argv[1], sys.argv[1:])";
 const waitProgressIntervalSeconds: u64 = 30;
 
-pub fn askPi(
+pub const SessionCache = struct {
     allocator: std.mem.Allocator,
     config: *const Config,
     config_dir: []const u8,
+    mutex: std.Thread.Mutex = .{},
+    shared_session: ?pi.AgentSession = null,
+    shared_session_created_ms: i64 = 0,
+
+    pub fn init(allocator: std.mem.Allocator, config: *const Config, config_dir: []const u8) SessionCache {
+        return .{
+            .allocator = allocator,
+            .config = config,
+            .config_dir = config_dir,
+        };
+    }
+
+    pub fn deinit(self: *SessionCache) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.disposeSharedSessionLocked();
+    }
+
+    fn reuseEnabled(self: *const SessionCache) bool {
+        return self.config.pi_session_ttl_seconds > 0;
+    }
+
+    fn ttlMillis(self: *const SessionCache) i64 {
+        return std.math.mul(i64, self.config.pi_session_ttl_seconds, std.time.ms_per_s) catch std.math.maxInt(i64);
+    }
+
+    fn shouldRotateSharedSessionLocked(self: *const SessionCache, now_ms: i64) bool {
+        if (self.shared_session == null) return false;
+        if (!self.reuseEnabled()) return true;
+        if (self.shared_session_created_ms <= 0) return true;
+        const age_ms = now_ms - self.shared_session_created_ms;
+        return age_ms >= self.ttlMillis();
+    }
+
+    fn disposeSharedSessionLocked(self: *SessionCache) void {
+        if (self.shared_session) |*session| {
+            session.dispose();
+            self.shared_session = null;
+        }
+        self.shared_session_created_ms = 0;
+    }
+
+    fn acquireSharedSessionLocked(self: *SessionCache) !*pi.AgentSession {
+        const now_ms = std.time.milliTimestamp();
+        if (self.shouldRotateSharedSessionLocked(now_ms)) {
+            const age_ms = if (self.shared_session_created_ms > 0) now_ms - self.shared_session_created_ms else -1;
+            log.info(
+                "op=session rotate reason=max_age age_ms={d} ttl_s={d}",
+                .{ age_ms, self.config.pi_session_ttl_seconds },
+            );
+            self.disposeSharedSessionLocked();
+        }
+
+        if (self.shared_session == null) {
+            log.info("op=session create mode=shared ttl_s={d}", .{self.config.pi_session_ttl_seconds});
+            const created = try createIsolatedAgentSession(self.allocator, self.config, self.config_dir);
+            self.shared_session = created.session;
+            self.shared_session_created_ms = now_ms;
+        }
+
+        return &self.shared_session.?;
+    }
+};
+
+pub fn askPi(
+    allocator: std.mem.Allocator,
+    session_cache: *SessionCache,
     prompt: []const u8,
     replied_message: ?[]const u8,
 ) ![]u8 {
-    log.info("op=ask_pi create_session", .{});
-
-    var created = try createIsolatedAgentSession(allocator, config, config_dir);
-    defer created.session.dispose();
-
     const contextual_prompt = if (replied_message) |reply| try std.fmt.allocPrint(
         allocator,
         "Runtime context:\n- Config directory: {s}\n- AGENTS file path (if present): {s}/AGENTS.md\n- Skills directory (if present): {s}/skills\n\nTelegram conversation context:\n- User message:\n{s}\n\n- Message being replied to:\n{s}",
-        .{ config_dir, config_dir, config_dir, prompt, reply },
+        .{ session_cache.config_dir, session_cache.config_dir, session_cache.config_dir, prompt, reply },
     ) else try std.fmt.allocPrint(
         allocator,
         "Runtime context:\n- Config directory: {s}\n- AGENTS file path (if present): {s}/AGENTS.md\n- Skills directory (if present): {s}/skills\n\nUser message:\n{s}",
-        .{ config_dir, config_dir, config_dir, prompt },
+        .{ session_cache.config_dir, session_cache.config_dir, session_cache.config_dir, prompt },
     );
     defer allocator.free(contextual_prompt);
 
@@ -35,49 +97,109 @@ pub fn askPi(
         prompt.len,
         if (replied_message != null) "yes" else "no",
     });
-    try created.session.prompt(contextual_prompt, .{});
-    try waitForIdleWithProgress(
-        &created.session,
-        "ask_pi",
-        timeoutSecondsOrDisabled(config.ask_pi_wait_timeout_seconds),
-    );
+    if (!session_cache.reuseEnabled()) {
+        log.info("op=ask_pi create_session mode=fresh", .{});
+        var created = try createIsolatedAgentSession(allocator, session_cache.config, session_cache.config_dir);
+        defer created.session.dispose();
+        try created.session.prompt(contextual_prompt, .{});
+        try waitForIdleWithProgress(
+            &created.session,
+            "ask_pi",
+            timeoutSecondsOrDisabled(session_cache.config.ask_pi_wait_timeout_seconds),
+        );
 
-    if (try created.session.getLastAssistantText()) |text| {
-        log.info("op=ask_pi response_received bytes={d}", .{text.len});
-        return text;
+        if (try created.session.getLastAssistantText()) |text| {
+            log.info("op=ask_pi response_received bytes={d}", .{text.len});
+            return text;
+        }
+        log.warn("op=ask_pi no_response", .{});
+        return allocator.dupe(u8, "I could not generate a response.");
     }
 
+    session_cache.mutex.lock();
+    defer session_cache.mutex.unlock();
+
+    const session = try session_cache.acquireSharedSessionLocked();
+    session.prompt(contextual_prompt, .{}) catch |err| {
+        session_cache.disposeSharedSessionLocked();
+        return err;
+    };
+    waitForIdleWithProgress(
+        session,
+        "ask_pi",
+        timeoutSecondsOrDisabled(session_cache.config.ask_pi_wait_timeout_seconds),
+    ) catch |err| {
+        session_cache.disposeSharedSessionLocked();
+        return err;
+    };
+
+    if (session.getLastAssistantText() catch |err| {
+        session_cache.disposeSharedSessionLocked();
+        return err;
+    }) |text| {
+        defer session_cache.allocator.free(text);
+        log.info("op=ask_pi response_received bytes={d}", .{text.len});
+        return allocator.dupe(u8, text);
+    }
     log.warn("op=ask_pi no_response", .{});
     return allocator.dupe(u8, "I could not generate a response.");
 }
 
 pub fn runHeartbeat(
     allocator: std.mem.Allocator,
-    config: *const Config,
-    config_dir: []const u8,
+    session_cache: *SessionCache,
 ) !void {
-    log.info("op=heartbeat create_session", .{});
-    var created = try createIsolatedAgentSession(allocator, config, config_dir);
-    defer created.session.dispose();
-
     const heartbeat_prompt = try std.fmt.allocPrint(
         allocator,
         "Heartbeat event:\n- This is an automated heartbeat from zigbot.\n- Follow instructions in HEARTBEAT.md at {s}/HEARTBEAT.md if present.\n- Timestamp (unix): {d}\n\nRespond with a short status update about this heartbeat.",
-        .{ config_dir, std.time.timestamp() },
+        .{ session_cache.config_dir, std.time.timestamp() },
     );
     defer allocator.free(heartbeat_prompt);
 
     log.info("op=heartbeat prompt_dispatched", .{});
-    try created.session.prompt(heartbeat_prompt, .{});
-    try waitForIdleWithProgress(
-        &created.session,
-        "heartbeat",
-        timeoutSecondsOrDisabled(config.heartbeat_wait_timeout_seconds),
-    );
+    if (!session_cache.reuseEnabled()) {
+        log.info("op=heartbeat create_session mode=fresh", .{});
+        var created = try createIsolatedAgentSession(allocator, session_cache.config, session_cache.config_dir);
+        defer created.session.dispose();
+        try created.session.prompt(heartbeat_prompt, .{});
+        try waitForIdleWithProgress(
+            &created.session,
+            "heartbeat",
+            timeoutSecondsOrDisabled(session_cache.config.heartbeat_wait_timeout_seconds),
+        );
 
-    if (try created.session.getLastAssistantText()) |text| {
+        if (try created.session.getLastAssistantText()) |text| {
+            log.info("op=heartbeat response_received bytes={d}", .{text.len});
+            allocator.free(text);
+        } else {
+            log.warn("op=heartbeat no_response", .{});
+        }
+        return;
+    }
+
+    session_cache.mutex.lock();
+    defer session_cache.mutex.unlock();
+
+    const session = try session_cache.acquireSharedSessionLocked();
+    session.prompt(heartbeat_prompt, .{}) catch |err| {
+        session_cache.disposeSharedSessionLocked();
+        return err;
+    };
+    waitForIdleWithProgress(
+        session,
+        "heartbeat",
+        timeoutSecondsOrDisabled(session_cache.config.heartbeat_wait_timeout_seconds),
+    ) catch |err| {
+        session_cache.disposeSharedSessionLocked();
+        return err;
+    };
+
+    if (session.getLastAssistantText() catch |err| {
+        session_cache.disposeSharedSessionLocked();
+        return err;
+    }) |text| {
         log.info("op=heartbeat response_received bytes={d}", .{text.len});
-        allocator.free(text);
+        session_cache.allocator.free(text);
     } else {
         log.warn("op=heartbeat no_response", .{});
     }

@@ -690,18 +690,10 @@
           kind: status.last_heartbeat_ok ? "ok" : "err",
         });
       }
-      if (status.last_web_chat_ms > 0) {
-        events.push({
-          ms: status.last_web_chat_ms,
-          title: status.last_web_chat_ok ? "Local web request succeeded" : "Local web request failed",
-          meta: `${fmtTime(status.last_web_chat_ms)} (${fmtAgo(status.last_web_chat_ms, nowMs)})`,
-          kind: status.last_web_chat_ok ? "warn" : "err",
-        });
-      }
       if (status.agent_busy && status.active_task_started_ms > 0) {
         events.push({
           ms: status.active_task_started_ms,
-          title: `Chat agent working on ${status.active_task}`,
+          title: `Agent working on ${status.active_task}`,
           meta: `${fmtTime(status.active_task_started_ms)} (${fmtAgo(status.active_task_started_ms, nowMs)})`,
           kind: "warn",
         });
@@ -755,7 +747,6 @@
       if (status.last_poll_error) errors.push(`[poll] ${status.last_poll_error}`);
       if (status.last_heartbeat_error) errors.push(`[heartbeat] ${status.last_heartbeat_error}`);
       if (status.last_telegram_error) errors.push(`[telegram] ${status.last_telegram_error}`);
-      if (status.last_web_error) errors.push(`[web] ${status.last_web_error}`);
 
       if (!errors.length) {
         errorConsoleEl.className = "error-console ok";
@@ -778,9 +769,7 @@
           ? `${fmtTime(status.next_heartbeat_ms)} (${fmtRelative(status.next_heartbeat_ms, nowMs)})`
           : "disabled";
         const healthScore = classifyHeartbeatHealth(status);
-        const totalBusyRejects =
-          (Number(status.telegram_busy_reject_count) || 0) +
-          (Number(status.web_chat_busy_reject_count) || 0);
+        const telegramBusyRejects = Number(status.telegram_busy_reject_count) || 0;
         const providerName = status.provider || "default";
         const modelName = status.model || "default";
         const heartbeatMode = status.heartbeat_execution_mode || "threaded";
@@ -793,18 +782,18 @@
         kpiPollErrorsEl.textContent = fmtCount(status.poll_error_count);
 
         renderKv(coreStatusEl, [
-          ["Chat agent state", status.agent_busy ? "busy" : "idle"],
-          ["Chat task", status.active_task],
-          ["Chat task runtime", activeFor],
+          ["Agent state", status.agent_busy ? "busy" : "idle"],
+          ["Active task", status.active_task],
+          ["Active runtime", activeFor],
           ["Heartbeat mode", heartbeatMode],
           ["Started", new Date(status.started_ms).toLocaleTimeString()],
           ["Heartbeat interval", status.heartbeat_enabled ? `${status.heartbeat_interval_seconds}s` : "disabled"],
+          ["Pi session TTL", status.pi_session_ttl_seconds > 0 ? `${status.pi_session_ttl_seconds}s (max-age)` : "disabled"],
           ["Poll timeout", `${status.polling_timeout_seconds}s`],
           ["Owner chat lock", status.owner_chat_restricted ? "enabled" : "off"],
           ["Provider / model", `${providerName} / ${modelName}`],
           ["Telegram messages", fmtCount(status.telegram_message_count)],
-          ["Local web requests", fmtCount(status.web_chat_count)],
-          ["Chat contention", fmtCount(totalBusyRejects)],
+          ["Telegram busy rejects", fmtCount(telegramBusyRejects)],
         ]);
 
         renderKv(heartbeatStatusEl, [
@@ -825,9 +814,6 @@
           ["Telegram busy rejects", fmtCount(status.telegram_busy_reject_count)],
           ["Telegram generation errors", fmtCount(status.telegram_generation_error_count)],
           ["Telegram send errors", fmtCount(status.telegram_send_error_count)],
-          ["Web busy rejects", fmtCount(status.web_chat_busy_reject_count)],
-          ["Last local request", `${fmtTime(status.last_web_chat_ms)} (${fmtAgo(status.last_web_chat_ms, nowMs)})`],
-          ["Last local duration", fmtMs(status.last_web_chat_duration_ms)],
         ]);
 
         heartbeatMeterFillEl.style.width = `${healthScore}%`;
@@ -842,11 +828,9 @@
         setBadge(
           badgeAgentEl,
           status.agent_busy
-            ? `chat-agent: busy (${status.active_task})`
-            : totalBusyRejects > 0
-              ? `chat-agent: contention (${fmtCount(totalBusyRejects)})`
-              : "chat-agent: idle",
-          status.agent_busy || totalBusyRejects > 0 ? "warn" : "ok"
+            ? `agent: busy (${status.active_task})`
+            : "agent: idle",
+          status.agent_busy ? "warn" : "ok"
         );
         setBadge(
           badgeHeartbeatEl,

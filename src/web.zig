@@ -1,12 +1,10 @@
 const std = @import("std");
 const logging = @import("logging.zig");
 const Config = @import("config.zig").Config;
-const askPi = @import("pi_agent.zig").askPi;
 const RuntimeState = @import("runtime_state.zig").RuntimeState;
 const agentTaskName = @import("runtime_state.zig").agentTaskName;
 
 const ui_html = @embedFile("assets/web/index.html");
-const request_body_limit_bytes = 32 * 1024;
 const request_head_timeout_seconds = 10;
 
 pub const ServeMode = enum {
@@ -183,15 +181,11 @@ fn serveRequest(context: *ServerContext, request: *std.http.Server.Request) !voi
     if (method == .GET and std.mem.eql(u8, path, "/api/extensions")) {
         return serveDirectoryNames(context, request, "extensions", "extensions");
     }
-    if (method == .POST and std.mem.eql(u8, path, "/api/chat")) {
-        return serveChat(context, request);
-    }
 
     if (std.mem.eql(u8, path, "/api/status") or
         std.mem.eql(u8, path, "/healthz") or
         std.mem.eql(u8, path, "/api/skills") or
-        std.mem.eql(u8, path, "/api/extensions") or
-        std.mem.eql(u8, path, "/api/chat"))
+        std.mem.eql(u8, path, "/api/extensions"))
     {
         return respondJsonError(request, .method_not_allowed, "method not allowed");
     }
@@ -246,6 +240,7 @@ fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void
         .heartbeat_execution_mode = "threaded",
         .heartbeat_interval_seconds = context.config.heartbeat_interval_seconds,
         .heartbeat_enabled = heartbeat_enabled,
+        .pi_session_ttl_seconds = context.config.pi_session_ttl_seconds,
         .web_enabled = context.config.web_enabled,
         .owner_chat_restricted = context.config.owner_chat_id != null,
         .provider = context.config.provider,
@@ -260,8 +255,6 @@ fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void
         .telegram_generation_error_count = snapshot.telegram_generation_error_count,
         .telegram_send_error_count = snapshot.telegram_send_error_count,
         .last_telegram_error = snapshot.telegramError(),
-        .web_chat_count = snapshot.web_chat_count,
-        .web_chat_busy_reject_count = snapshot.web_chat_busy_reject_count,
         .heartbeat_deferred_count = snapshot.heartbeat_deferred_count,
         .heartbeat_run_count = snapshot.heartbeat_run_count,
         .heartbeat_error_count = snapshot.heartbeat_error_count,
@@ -273,12 +266,6 @@ fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void
         .agent_busy = snapshot.agent_busy,
         .active_task = agentTaskName(snapshot.active_task),
         .active_task_started_ms = snapshot.active_task_started_ms,
-        .last_web_chat_ms = snapshot.last_web_chat_ms,
-        .last_web_chat_duration_ms = snapshot.last_web_chat_duration_ms,
-        .last_web_chat_ok = snapshot.last_web_chat_ok,
-        .last_web_prompt = snapshot.webPrompt(),
-        .last_web_response = snapshot.webResponse(),
-        .last_web_error = snapshot.webError(),
     };
 
     const payload = try std.fmt.allocPrint(arena, "{f}", .{
@@ -318,86 +305,6 @@ fn serveDirectoryNames(
         });
 
     try respondJson(request, .ok, payload);
-}
-
-fn serveChat(context: *ServerContext, request: *std.http.Server.Request) !void {
-    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    if (request.head.expect != null) {
-        return respondJsonError(request, .expectation_failed, "expect headers are not supported");
-    }
-
-    const body = readRequestBody(arena, request) catch |err| switch (err) {
-        error.MissingContentLength => return respondJsonError(request, .length_required, "content-length is required"),
-        error.RequestBodyTooLarge => return respondJsonError(request, .payload_too_large, "request body too large"),
-        error.EndOfStream => return respondJsonError(request, .bad_request, "unexpected end of request body"),
-        else => return respondJsonError(request, .bad_request, "failed reading request body"),
-    };
-
-    const ChatInput = struct {
-        message: []const u8,
-    };
-
-    const parsed = std.json.parseFromSlice(ChatInput, arena, body, .{
-        .ignore_unknown_fields = true,
-    }) catch {
-        return respondJsonError(request, .bad_request, "expected JSON body with field `message`");
-    };
-    defer parsed.deinit();
-
-    const prompt = std.mem.trim(u8, parsed.value.message, " \t\r\n");
-    if (prompt.len == 0) {
-        return respondJsonError(request, .bad_request, "message cannot be empty");
-    }
-
-    if (!context.status.tryBeginAgentTask(.web_chat)) {
-        context.status.recordWebChatBusyReject();
-        const snapshot = context.status.snapshot();
-        const payload = try std.fmt.allocPrint(arena, "{f}", .{
-            std.json.fmt(struct {
-                @"error": []const u8,
-                active_task: []const u8,
-            }{
-                .@"error" = "agent is busy",
-                .active_task = agentTaskName(snapshot.active_task),
-            }, .{}),
-        });
-        return respondJson(request, .conflict, payload);
-    }
-    defer context.status.finishAgentTask(.web_chat);
-
-    const started_ms = std.time.milliTimestamp();
-    const response_text = askPi(arena, context.config, context.config_dir, prompt, null) catch |err| {
-        const duration_ms = std.time.milliTimestamp() - started_ms;
-        const err_name = @errorName(err);
-        context.status.recordWebChatError(prompt, err_name, duration_ms);
-        return respondJsonError(request, .internal_server_error, "agent request failed");
-    };
-
-    const duration_ms = std.time.milliTimestamp() - started_ms;
-    context.status.recordWebChatSuccess(prompt, response_text, duration_ms);
-
-    const payload = try std.fmt.allocPrint(arena, "{f}", .{
-        std.json.fmt(struct {
-            response: []const u8,
-            duration_ms: i64,
-        }{
-            .response = response_text,
-            .duration_ms = duration_ms,
-        }, .{}),
-    });
-    try respondJson(request, .ok, payload);
-}
-
-fn readRequestBody(allocator: std.mem.Allocator, request: *std.http.Server.Request) ![]u8 {
-    const length_u64 = request.head.content_length orelse return error.MissingContentLength;
-    if (length_u64 > request_body_limit_bytes) return error.RequestBodyTooLarge;
-
-    const length = std.math.cast(usize, length_u64) orelse return error.RequestBodyTooLarge;
-    const reader = request.readerExpectNone(&.{});
-    return reader.readAlloc(allocator, length);
 }
 
 fn readDirectoryNames(allocator: std.mem.Allocator, base_dir: []const u8, child_dir: []const u8) ![]const []const u8 {

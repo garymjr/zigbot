@@ -4,6 +4,7 @@ const Config = @import("config.zig").Config;
 const TelegramClient = @import("telegram.zig").TelegramClient;
 const askPi = @import("pi_agent.zig").askPi;
 const runHeartbeat = @import("pi_agent.zig").runHeartbeat;
+const SessionCache = @import("pi_agent.zig").SessionCache;
 const ensureSecretsExtensionInstalled = @import("secret_extension.zig").ensureInstalled;
 const RuntimeState = @import("runtime_state.zig").RuntimeState;
 const agentTaskName = @import("runtime_state.zig").agentTaskName;
@@ -17,8 +18,8 @@ const RunMode = enum {
 
 const HeartbeatWorkerContext = struct {
     runtime_state: *RuntimeState,
+    session_cache: *SessionCache,
     config: *const Config,
-    config_dir: []const u8,
     shutdown: *std.atomic.Value(bool),
 };
 
@@ -75,6 +76,7 @@ pub fn run() !void {
     log.info("heartbeat interval (seconds): {d}", .{config.heartbeat_interval_seconds});
     log.info("heartbeat wait timeout (seconds): {d}", .{config.heartbeat_wait_timeout_seconds});
     log.info("askPi wait timeout (seconds): {d}", .{config.ask_pi_wait_timeout_seconds});
+    log.info("pi session ttl (seconds): {d}", .{config.pi_session_ttl_seconds});
     if (config.owner_chat_id) |owner_chat_id| {
         log.info("owner chat restriction enabled for chat_id={d}", .{owner_chat_id});
     } else {
@@ -82,6 +84,8 @@ pub fn run() !void {
     }
 
     try ensureSecretsExtensionInstalled(allocator, config_dir);
+    var session_cache = SessionCache.init(allocator, &config, config_dir);
+    defer session_cache.deinit();
 
     if (mode == .beat) {
         const execution_scope = pushNewExecutionId();
@@ -89,7 +93,7 @@ pub fn run() !void {
 
         log.info("running manual heartbeat", .{});
 
-        runHeartbeat(allocator, &config, config_dir) catch |err| {
+        runHeartbeat(allocator, &session_cache) catch |err| {
             log.err("manual heartbeat failed: {}", .{err});
             return err;
         };
@@ -116,8 +120,8 @@ pub fn run() !void {
         runtime_state.setNextHeartbeatMillis(first_heartbeat_ms);
         heartbeat_thread = std.Thread.spawn(.{}, heartbeatWorkerMain, .{HeartbeatWorkerContext{
             .runtime_state = &runtime_state,
+            .session_cache = &session_cache,
             .config = &config,
-            .config_dir = config_dir,
             .shutdown = &shutdown_requested,
         }}) catch |err| blk: {
             log.err("failed to start heartbeat worker: {}", .{err});
@@ -161,7 +165,7 @@ pub fn run() !void {
     log.info("waiting for Telegram messages...", .{});
     while (!shutdown_requested.load(.acquire)) {
         const poll_timeout_seconds = clampNonNegative(config.polling_timeout_seconds);
-        handlePollCycle(allocator, &runtime_state, &config, config_dir, &telegram, &next_update_offset, poll_timeout_seconds) catch |err| {
+        handlePollCycle(allocator, &runtime_state, &session_cache, &config, &telegram, &next_update_offset, poll_timeout_seconds) catch |err| {
             if (shutdown_requested.load(.acquire)) break;
             runtime_state.recordPollError(err);
             log.err("poll loop error: {}", .{err});
@@ -210,8 +214,8 @@ fn configDirFromConfigPath(allocator: std.mem.Allocator, config_path: []const u8
 fn handlePollCycle(
     allocator: std.mem.Allocator,
     runtime_state: *RuntimeState,
+    session_cache: *SessionCache,
     config: *const Config,
-    config_dir: []const u8,
     telegram: *TelegramClient,
     next_update_offset: *i64,
     poll_timeout_seconds: i64,
@@ -264,7 +268,7 @@ fn handlePollCycle(
             }
             defer runtime_state.finishAgentTask(.telegram);
 
-            break :response askPi(allocator, config, config_dir, user_text, replied_text) catch |err| blk: {
+            break :response askPi(allocator, session_cache, user_text, replied_text) catch |err| blk: {
                 telegram_generation_failed = true;
                 runtime_state.recordTelegramGenerationError(err);
                 log.err("pi request failed: {}", .{err});
@@ -311,8 +315,22 @@ fn heartbeatWorkerMain(context: HeartbeatWorkerContext) void {
             defer execution_scope.restore();
 
             log.info("triggering heartbeat", .{});
+            if (!context.runtime_state.tryBeginAgentTask(.heartbeat)) {
+                context.runtime_state.recordHeartbeatDeferred();
+                const snapshot = context.runtime_state.snapshot();
+                log.info(
+                    "heartbeat deferred, agent busy with task={s}",
+                    .{agentTaskName(snapshot.active_task)},
+                );
+                const after_run_ms = std.time.milliTimestamp();
+                next_heartbeat_ms = std.math.add(i64, after_run_ms, interval_ms) catch std.math.maxInt(i64);
+                context.runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
+                continue;
+            }
+            defer context.runtime_state.finishAgentTask(.heartbeat);
+
             context.runtime_state.recordHeartbeatStarted();
-            runHeartbeat(std.heap.page_allocator, context.config, context.config_dir) catch |err| {
+            runHeartbeat(std.heap.page_allocator, context.session_cache) catch |err| {
                 context.runtime_state.recordHeartbeatError(err);
                 log.err("heartbeat error: {}", .{err});
                 const after_run_ms = std.time.milliTimestamp();
