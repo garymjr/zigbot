@@ -81,6 +81,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      flex-wrap: wrap;
       gap: 16px;
       box-shadow: var(--shadow);
       animation: riseIn 600ms ease-out both;
@@ -109,9 +110,10 @@
 
     .badge-strip {
       display: flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       gap: 10px;
       justify-content: flex-end;
+      margin-left: auto;
     }
 
     .badge {
@@ -434,6 +436,8 @@
 
       .badge-strip {
         justify-content: flex-start;
+        flex-wrap: wrap;
+        margin-left: 0;
       }
 
       .kpi-grid {
@@ -600,6 +604,12 @@
       return numberFmt.format(Number(value) || 0);
     }
 
+    function fmtMs(value) {
+      const ms = Number(value);
+      if (!Number.isFinite(ms) || ms <= 0) return "n/a";
+      return `${ms}ms`;
+    }
+
     async function fetchJson(url, opts) {
       const response = await fetch(url, opts);
       const data = await response.json().catch(() => ({}));
@@ -735,6 +745,7 @@
       const errors = [];
       if (status.last_poll_error) errors.push(`[poll] ${status.last_poll_error}`);
       if (status.last_heartbeat_error) errors.push(`[heartbeat] ${status.last_heartbeat_error}`);
+      if (status.last_telegram_error) errors.push(`[telegram] ${status.last_telegram_error}`);
       if (status.last_web_error) errors.push(`[web] ${status.last_web_error}`);
 
       if (!errors.length) {
@@ -758,6 +769,12 @@
           ? `${fmtTime(status.next_heartbeat_ms)} (${fmtRelative(status.next_heartbeat_ms, nowMs)})`
           : "disabled";
         const healthScore = classifyHeartbeatHealth(status);
+        const totalBusyRejects =
+          (Number(status.telegram_busy_reject_count) || 0) +
+          (Number(status.web_chat_busy_reject_count) || 0) +
+          (Number(status.heartbeat_deferred_count) || 0);
+        const providerName = status.provider || "default";
+        const modelName = status.model || "default";
 
         updatedAtEl.textContent = `Updated ${new Date(nowMs).toLocaleString()} · Uptime ${fmtDuration(status.uptime_seconds)}`;
 
@@ -771,16 +788,23 @@
           ["Active task", status.active_task],
           ["Task runtime", activeFor],
           ["Started", new Date(status.started_ms).toLocaleTimeString()],
+          ["Heartbeat interval", status.heartbeat_enabled ? `${status.heartbeat_interval_seconds}s` : "disabled"],
+          ["Poll timeout", `${status.polling_timeout_seconds}s`],
+          ["Owner chat lock", status.owner_chat_restricted ? "enabled" : "off"],
+          ["Provider / model", `${providerName} / ${modelName}`],
           ["Telegram messages", fmtCount(status.telegram_message_count)],
           ["Local web requests", fmtCount(status.web_chat_count)],
+          ["Agent contention", fmtCount(totalBusyRejects)],
         ]);
 
         renderKv(heartbeatStatusEl, [
           ["Next run", nextHeartbeat],
           ["Total runs", fmtCount(status.heartbeat_run_count)],
           ["Error count", fmtCount(status.heartbeat_error_count)],
+          ["Deferred (agent busy)", fmtCount(status.heartbeat_deferred_count)],
           ["Last started", `${fmtTime(status.last_heartbeat_started_ms)} (${fmtAgo(status.last_heartbeat_started_ms, nowMs)})`],
           ["Last finished", `${fmtTime(status.last_heartbeat_finished_ms)} (${fmtAgo(status.last_heartbeat_finished_ms, nowMs)})`],
+          ["Last duration", fmtMs(status.last_heartbeat_duration_ms)],
           ["Last result", status.last_heartbeat_ok ? "ok" : "error"],
         ]);
 
@@ -788,8 +812,12 @@
           ["Last poll", `${fmtTime(status.last_poll_ms)} (${fmtAgo(status.last_poll_ms, nowMs)})`],
           ["Last poll result", status.last_poll_ok ? "ok" : "error"],
           ["Poll error total", fmtCount(status.poll_error_count)],
+          ["Telegram busy rejects", fmtCount(status.telegram_busy_reject_count)],
+          ["Telegram generation errors", fmtCount(status.telegram_generation_error_count)],
+          ["Telegram send errors", fmtCount(status.telegram_send_error_count)],
+          ["Web busy rejects", fmtCount(status.web_chat_busy_reject_count)],
           ["Last local request", `${fmtTime(status.last_web_chat_ms)} (${fmtAgo(status.last_web_chat_ms, nowMs)})`],
-          ["Last local duration", `${status.last_web_chat_duration_ms}ms`],
+          ["Last local duration", fmtMs(status.last_web_chat_duration_ms)],
         ]);
 
         heartbeatMeterFillEl.style.width = `${healthScore}%`;
@@ -803,13 +831,19 @@
 
         setBadge(
           badgeAgentEl,
-          status.agent_busy ? `agent: busy (${status.active_task})` : "agent: idle",
-          status.agent_busy ? "warn" : "ok"
+          status.agent_busy
+            ? `agent: busy (${status.active_task})`
+            : totalBusyRejects > 0
+              ? `agent: contention (${fmtCount(totalBusyRejects)})`
+              : "agent: idle",
+          status.agent_busy || totalBusyRejects > 0 ? "warn" : "ok"
         );
         setBadge(
           badgeHeartbeatEl,
-          status.last_heartbeat_ok ? "heartbeat: healthy" : "heartbeat: failing",
-          status.last_heartbeat_ok ? "ok" : "err"
+          status.heartbeat_enabled
+            ? (status.last_heartbeat_ok ? "heartbeat: healthy" : "heartbeat: failing")
+            : "heartbeat: disabled",
+          status.heartbeat_enabled ? (status.last_heartbeat_ok ? "ok" : "err") : "warn"
         );
         setBadge(
           badgePollEl,
