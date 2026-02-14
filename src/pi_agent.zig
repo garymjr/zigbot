@@ -8,6 +8,13 @@ const setProcessGroupAndExecScript =
     "import os,sys; os.setpgrp(); os.execvp(sys.argv[1], sys.argv[1:])";
 const waitProgressIntervalSeconds: u64 = 30;
 
+pub const SharedSessionStatus = struct {
+    active: bool,
+    created_ms: ?i64,
+    expires_at_ms: ?i64,
+    ttl_remaining_ms: ?i64,
+};
+
 pub const SessionCache = struct {
     allocator: std.mem.Allocator,
     config: *const Config,
@@ -28,6 +35,51 @@ pub const SessionCache = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.disposeSharedSessionLocked();
+    }
+
+    pub fn sharedSessionStatus(self: *SessionCache, now_ms: i64) SharedSessionStatus {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.shared_session == null) {
+            return .{
+                .active = false,
+                .created_ms = null,
+                .expires_at_ms = null,
+                .ttl_remaining_ms = null,
+            };
+        }
+
+        if (self.shared_session_created_ms <= 0 or !self.reuseEnabled()) {
+            return .{
+                .active = true,
+                .created_ms = if (self.shared_session_created_ms > 0) self.shared_session_created_ms else null,
+                .expires_at_ms = null,
+                .ttl_remaining_ms = null,
+            };
+        }
+
+        const ttl_ms = self.ttlMillis();
+        const expires_at_ms = std.math.add(i64, self.shared_session_created_ms, ttl_ms) catch std.math.maxInt(i64);
+        const ttl_remaining_ms = if (expires_at_ms <= now_ms) 0 else expires_at_ms - now_ms;
+        return .{
+            .active = true,
+            .created_ms = self.shared_session_created_ms,
+            .expires_at_ms = expires_at_ms,
+            .ttl_remaining_ms = ttl_remaining_ms,
+        };
+    }
+
+    pub fn expireSharedSession(self: *SessionCache) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const had_shared_session = self.shared_session != null;
+        if (had_shared_session) {
+            log.info("op=session rotate reason=manual_timeout", .{});
+        }
+        self.disposeSharedSessionLocked();
+        return had_shared_session;
     }
 
     fn reuseEnabled(self: *const SessionCache) bool {

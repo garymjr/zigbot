@@ -5,6 +5,7 @@ const TelegramClient = @import("telegram.zig").TelegramClient;
 const askPi = @import("pi_agent.zig").askPi;
 const runHeartbeat = @import("pi_agent.zig").runHeartbeat;
 const SessionCache = @import("pi_agent.zig").SessionCache;
+const SharedSessionStatus = @import("pi_agent.zig").SharedSessionStatus;
 const ensureSecretsExtensionInstalled = @import("secret_extension.zig").ensureInstalled;
 const RuntimeState = @import("runtime_state.zig").RuntimeState;
 const agentTaskName = @import("runtime_state.zig").agentTaskName;
@@ -21,6 +22,17 @@ const HeartbeatWorkerContext = struct {
     session_cache: *SessionCache,
     config: *const Config,
     shutdown: *std.atomic.Value(bool),
+};
+
+const WebControlContext = struct {
+    runtime_state: *RuntimeState,
+    session_cache: *SessionCache,
+    shutdown: *std.atomic.Value(bool),
+};
+
+const OnDemandHeartbeatContext = struct {
+    runtime_state: *RuntimeState,
+    session_cache: *SessionCache,
 };
 
 var shutdown_requested = std.atomic.Value(bool).init(false);
@@ -132,6 +144,18 @@ pub fn run() !void {
         runtime_state.setNextHeartbeatMillis(std.math.maxInt(i64));
     }
 
+    var web_control_context = WebControlContext{
+        .runtime_state = &runtime_state,
+        .session_cache = &session_cache,
+        .shutdown = &shutdown_requested,
+    };
+    const web_controls = web.Controls{
+        .context = @ptrCast(&web_control_context),
+        .get_pi_session_status = webGetPiSessionStatus,
+        .trigger_heartbeat = webTriggerHeartbeat,
+        .expire_pi_session = webExpirePiSession,
+    };
+
     var web_server: ?web.Server = null;
 
     const web_mode: web.ServeMode = if (config.web_enabled) .full else .status_only;
@@ -142,6 +166,7 @@ pub fn run() !void {
             config_dir,
             web_mode,
             &shutdown_requested,
+            web_controls,
         ) catch |err| {
             if (config.web_enabled) {
                 log.err("failed starting web ui: {}", .{err});
@@ -180,6 +205,63 @@ pub fn run() !void {
         server.stopAndJoin();
     }
     log.info("zigbot stopped", .{});
+}
+
+fn webGetPiSessionStatus(context: *anyopaque, now_ms: i64) web.PiSessionStatus {
+    const control: *WebControlContext = @ptrCast(@alignCast(context));
+    const status: SharedSessionStatus = control.session_cache.sharedSessionStatus(now_ms);
+    return .{
+        .active = status.active,
+        .created_ms = status.created_ms,
+        .expires_at_ms = status.expires_at_ms,
+        .ttl_remaining_ms = status.ttl_remaining_ms,
+    };
+}
+
+fn webTriggerHeartbeat(context: *anyopaque) web.TriggerHeartbeatResult {
+    const control: *WebControlContext = @ptrCast(@alignCast(context));
+    if (control.shutdown.load(.acquire)) return .unavailable;
+    if (!control.runtime_state.tryBeginAgentTask(.heartbeat)) return .busy;
+
+    const worker_context = std.heap.page_allocator.create(OnDemandHeartbeatContext) catch {
+        control.runtime_state.finishAgentTask(.heartbeat);
+        return .failed;
+    };
+    worker_context.* = .{
+        .runtime_state = control.runtime_state,
+        .session_cache = control.session_cache,
+    };
+    const thread = std.Thread.spawn(.{}, runOnDemandHeartbeat, .{worker_context}) catch {
+        std.heap.page_allocator.destroy(worker_context);
+        control.runtime_state.finishAgentTask(.heartbeat);
+        return .failed;
+    };
+    thread.detach();
+    return .started;
+}
+
+fn webExpirePiSession(context: *anyopaque) web.ExpireSessionResult {
+    const control: *WebControlContext = @ptrCast(@alignCast(context));
+    if (control.shutdown.load(.acquire)) return .unavailable;
+    const expired = control.session_cache.expireSharedSession();
+    return if (expired) .expired else .no_session;
+}
+
+fn runOnDemandHeartbeat(context: *OnDemandHeartbeatContext) void {
+    defer std.heap.page_allocator.destroy(context);
+    defer context.runtime_state.finishAgentTask(.heartbeat);
+
+    const execution_scope = pushNewExecutionId();
+    defer execution_scope.restore();
+
+    log.info("triggering heartbeat via web ui", .{});
+    context.runtime_state.recordHeartbeatStarted();
+    runHeartbeat(std.heap.page_allocator, context.session_cache) catch |err| {
+        context.runtime_state.recordHeartbeatError(err);
+        log.err("web-triggered heartbeat error: {}", .{err});
+        return;
+    };
+    context.runtime_state.recordHeartbeatSuccess();
 }
 
 fn defaultConfigDir(allocator: std.mem.Allocator) ![]u8 {

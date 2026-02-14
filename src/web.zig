@@ -12,6 +12,33 @@ pub const ServeMode = enum {
     status_only,
 };
 
+pub const PiSessionStatus = struct {
+    active: bool = false,
+    created_ms: ?i64 = null,
+    expires_at_ms: ?i64 = null,
+    ttl_remaining_ms: ?i64 = null,
+};
+
+pub const TriggerHeartbeatResult = enum {
+    started,
+    busy,
+    unavailable,
+    failed,
+};
+
+pub const ExpireSessionResult = enum {
+    expired,
+    no_session,
+    unavailable,
+};
+
+pub const Controls = struct {
+    context: *anyopaque,
+    get_pi_session_status: *const fn (context: *anyopaque, now_ms: i64) PiSessionStatus,
+    trigger_heartbeat: *const fn (context: *anyopaque) TriggerHeartbeatResult,
+    expire_pi_session: *const fn (context: *anyopaque) ExpireSessionResult,
+};
+
 pub const Server = struct {
     thread: std.Thread,
     config: *const Config,
@@ -30,6 +57,7 @@ const ServerContext = struct {
     config_dir: []const u8,
     mode: ServeMode,
     shutdown_requested: *std.atomic.Value(bool),
+    controls: ?Controls,
 };
 
 pub fn spawn(
@@ -38,6 +66,7 @@ pub fn spawn(
     config_dir: []const u8,
     mode: ServeMode,
     shutdown_requested: *std.atomic.Value(bool),
+    controls: ?Controls,
 ) !Server {
     const allocator = std.heap.page_allocator;
     const context = try allocator.create(ServerContext);
@@ -47,6 +76,7 @@ pub fn spawn(
         .config_dir = config_dir,
         .mode = mode,
         .shutdown_requested = shutdown_requested,
+        .controls = controls,
     };
     errdefer allocator.destroy(context);
 
@@ -181,11 +211,19 @@ fn serveRequest(context: *ServerContext, request: *std.http.Server.Request) !voi
     if (method == .GET and std.mem.eql(u8, path, "/api/extensions")) {
         return serveDirectoryNames(context, request, "extensions", "extensions");
     }
+    if (method == .POST and std.mem.eql(u8, path, "/api/heartbeat")) {
+        return serveTriggerHeartbeat(context, request);
+    }
+    if (method == .POST and std.mem.eql(u8, path, "/api/pi-session/expire")) {
+        return serveExpirePiSession(context, request);
+    }
 
     if (std.mem.eql(u8, path, "/api/status") or
         std.mem.eql(u8, path, "/healthz") or
         std.mem.eql(u8, path, "/api/skills") or
-        std.mem.eql(u8, path, "/api/extensions"))
+        std.mem.eql(u8, path, "/api/extensions") or
+        std.mem.eql(u8, path, "/api/heartbeat") or
+        std.mem.eql(u8, path, "/api/pi-session/expire"))
     {
         return respondJsonError(request, .method_not_allowed, "method not allowed");
     }
@@ -232,6 +270,10 @@ fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void
         snapshot.last_heartbeat_finished_ms - snapshot.last_heartbeat_started_ms
     else
         null;
+    const pi_session_status = if (context.controls) |controls|
+        controls.get_pi_session_status(controls.context, snapshot.captured_ms)
+    else
+        PiSessionStatus{};
     const payload_data = .{
         .now_ms = snapshot.captured_ms,
         .started_ms = snapshot.started_ms,
@@ -241,6 +283,10 @@ fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void
         .heartbeat_interval_seconds = context.config.heartbeat_interval_seconds,
         .heartbeat_enabled = heartbeat_enabled,
         .pi_session_ttl_seconds = context.config.pi_session_ttl_seconds,
+        .pi_session_active = pi_session_status.active,
+        .pi_session_created_ms = pi_session_status.created_ms,
+        .pi_session_expires_at_ms = pi_session_status.expires_at_ms,
+        .pi_session_ttl_remaining_ms = pi_session_status.ttl_remaining_ms,
         .web_enabled = context.config.web_enabled,
         .owner_chat_restricted = context.config.owner_chat_id != null,
         .provider = context.config.provider,
@@ -273,6 +319,33 @@ fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void
     });
 
     try respondJson(request, .ok, payload);
+}
+
+fn serveTriggerHeartbeat(context: *ServerContext, request: *std.http.Server.Request) !void {
+    const controls = context.controls orelse {
+        return respondJsonError(request, .service_unavailable, "heartbeat controls unavailable");
+    };
+
+    const result = controls.trigger_heartbeat(controls.context);
+    return switch (result) {
+        .started => respondJson(request, .accepted, "{\"ok\":true,\"status\":\"started\"}"),
+        .busy => respondJsonError(request, .conflict, "agent is busy"),
+        .unavailable => respondJsonError(request, .service_unavailable, "heartbeat unavailable"),
+        .failed => respondJsonError(request, .internal_server_error, "failed to start heartbeat"),
+    };
+}
+
+fn serveExpirePiSession(context: *ServerContext, request: *std.http.Server.Request) !void {
+    const controls = context.controls orelse {
+        return respondJsonError(request, .service_unavailable, "session controls unavailable");
+    };
+
+    const result = controls.expire_pi_session(controls.context);
+    return switch (result) {
+        .expired => respondJson(request, .ok, "{\"ok\":true,\"status\":\"expired\"}"),
+        .no_session => respondJson(request, .ok, "{\"ok\":true,\"status\":\"no_session\"}"),
+        .unavailable => respondJsonError(request, .service_unavailable, "session unavailable"),
+    };
 }
 
 fn serveDirectoryNames(

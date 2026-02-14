@@ -262,6 +262,65 @@
       overflow-wrap: anywhere;
     }
 
+    .kv dd.value-inline-nowrap {
+      max-width: 75%;
+      white-space: nowrap;
+      overflow-wrap: normal;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .control-strip {
+      display: grid;
+      grid-template-columns: repeat(2, auto);
+      gap: 8px;
+      justify-content: flex-end;
+      align-items: center;
+      margin-left: 8px;
+    }
+
+    .control-button {
+      border-radius: 999px;
+      border: 2px solid var(--line-strong);
+      background: var(--bg-surface-strong);
+      color: var(--text-main);
+      font-size: 0.72rem;
+      font-family: "IBM Plex Mono", monospace;
+      padding: 8px 12px;
+      cursor: pointer;
+      transition: border-color 150ms ease, transform 150ms ease, background-color 150ms ease;
+      white-space: nowrap;
+    }
+
+    .control-button:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
+    .control-button:disabled {
+      opacity: 0.5;
+      cursor: wait;
+      transform: none;
+    }
+
+    .control-feedback {
+      grid-column: span 2;
+      margin: 0;
+      font-size: 0.7rem;
+      font-family: "IBM Plex Mono", monospace;
+      color: var(--text-dim);
+      text-align: right;
+      display: none;
+    }
+
+    .control-feedback.visible {
+      display: block;
+    }
+
+    .control-feedback.ok { color: var(--ok); }
+    .control-feedback.warn { color: var(--warn); }
+    .control-feedback.err { color: var(--err); }
+
     .meter-wrap {
       margin-top: 12px;
       display: grid;
@@ -449,6 +508,15 @@
         margin-left: 0;
       }
 
+      .control-strip {
+        width: 100%;
+        justify-content: flex-start;
+      }
+
+      .control-feedback {
+        text-align: left;
+      }
+
       .kpi-grid {
         grid-template-columns: 1fr;
       }
@@ -475,6 +543,11 @@
         <div class="badge" id="badgeAgent">agent: unknown</div>
         <div class="badge" id="badgeHeartbeat">heartbeat: unknown</div>
         <div class="badge" id="badgePoll">poll: unknown</div>
+      </div>
+      <div class="control-strip">
+        <button class="control-button" id="btnHeartbeat" type="button">Trigger heartbeat</button>
+        <button class="control-button" id="btnSessionTimeout" type="button">Force session timeout</button>
+        <p class="control-feedback" id="controlFeedback" aria-live="polite"></p>
       </div>
     </section>
 
@@ -564,6 +637,10 @@
     const kpiMessagesEl = document.getElementById("kpiMessages");
     const kpiHeartbeatsEl = document.getElementById("kpiHeartbeats");
     const kpiPollErrorsEl = document.getElementById("kpiPollErrors");
+    const btnHeartbeatEl = document.getElementById("btnHeartbeat");
+    const btnSessionTimeoutEl = document.getElementById("btnSessionTimeout");
+    const controlFeedbackEl = document.getElementById("controlFeedback");
+    let controlFeedbackTimer = null;
 
     const numberFmt = new Intl.NumberFormat();
 
@@ -619,6 +696,18 @@
       return `${ms}ms`;
     }
 
+    function fmtSessionTtlRemaining(status) {
+      if ((Number(status.pi_session_ttl_seconds) || 0) <= 0) return "disabled";
+      if (!status.pi_session_active) return "no active session";
+      const remainingMs = Number(status.pi_session_ttl_remaining_ms);
+      if (!Number.isFinite(remainingMs) || remainingMs < 0) return "n/a";
+      const expiresAtMs = Number(status.pi_session_expires_at_ms);
+      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= 0) {
+        return fmtDuration(Math.ceil(remainingMs / 1000));
+      }
+      return `${fmtDuration(Math.ceil(remainingMs / 1000))} (${fmtRelative(expiresAtMs, status.now_ms)})`;
+    }
+
     async function fetchJson(url, opts) {
       const response = await fetch(url, opts);
       const data = await response.json().catch(() => ({}));
@@ -636,12 +725,13 @@
 
     function renderKv(element, rows) {
       element.textContent = "";
-      for (const [label, value] of rows) {
+      for (const [label, value, valueClass] of rows) {
         const row = document.createElement("div");
         const dt = document.createElement("dt");
         const dd = document.createElement("dd");
         dt.textContent = label;
         dd.textContent = value;
+        if (valueClass) dd.classList.add(valueClass);
         row.append(dt, dd);
         element.appendChild(row);
       }
@@ -789,9 +879,10 @@
           ["Started", new Date(status.started_ms).toLocaleTimeString()],
           ["Heartbeat interval", status.heartbeat_enabled ? `${status.heartbeat_interval_seconds}s` : "disabled"],
           ["Pi session TTL", status.pi_session_ttl_seconds > 0 ? `${status.pi_session_ttl_seconds}s (max-age)` : "disabled"],
+          ["Pi session remaining", fmtSessionTtlRemaining(status)],
           ["Poll timeout", `${status.polling_timeout_seconds}s`],
           ["Owner chat lock", status.owner_chat_restricted ? "enabled" : "off"],
-          ["Provider / model", `${providerName} / ${modelName}`],
+          ["Provider / model", `${providerName} / ${modelName}`, "value-inline-nowrap"],
           ["Telegram messages", fmtCount(status.telegram_message_count)],
           ["Telegram busy rejects", fmtCount(telegramBusyRejects)],
         ]);
@@ -867,6 +958,67 @@
         renderStringList(extensionsEl, [`error: ${error.message}`]);
       }
     }
+
+    function setControlFeedback(message, kind) {
+      if (controlFeedbackTimer) {
+        clearTimeout(controlFeedbackTimer);
+        controlFeedbackTimer = null;
+      }
+
+      if (!message) {
+        controlFeedbackEl.className = "control-feedback";
+        controlFeedbackEl.textContent = "";
+        return;
+      }
+
+      const tone = kind || "info";
+      controlFeedbackEl.className = `control-feedback visible ${tone}`.trim();
+      controlFeedbackEl.textContent = message;
+
+      controlFeedbackTimer = setTimeout(() => {
+        controlFeedbackEl.className = "control-feedback";
+        controlFeedbackEl.textContent = "";
+        controlFeedbackTimer = null;
+      }, 4000);
+    }
+
+    function setControlsDisabled(disabled) {
+      btnHeartbeatEl.disabled = disabled;
+      btnSessionTimeoutEl.disabled = disabled;
+    }
+
+    async function runControlAction(url, pendingMessage, onSuccess) {
+      setControlsDisabled(true);
+      setControlFeedback(pendingMessage, "warn");
+      try {
+        const result = await fetchJson(url, { method: "POST" });
+        setControlFeedback(onSuccess(result), "ok");
+      } catch (error) {
+        const tone = /busy/i.test(error.message) ? "warn" : "err";
+        setControlFeedback(error.message, tone);
+      } finally {
+        setControlsDisabled(false);
+        refreshStatus();
+      }
+    }
+
+    btnHeartbeatEl.addEventListener("click", () => {
+      runControlAction(
+        "/api/heartbeat",
+        "Triggering heartbeat...",
+        () => "Heartbeat accepted, running now."
+      );
+    });
+
+    btnSessionTimeoutEl.addEventListener("click", () => {
+      runControlAction(
+        "/api/pi-session/expire",
+        "Forcing session timeout...",
+        (result) => result.status === "expired"
+          ? "Session expired, next request will create a new one."
+          : "No active shared session to expire."
+      );
+    });
 
     refreshStatus();
     refreshStaticLists();
