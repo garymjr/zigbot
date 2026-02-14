@@ -13,6 +13,13 @@ const RunMode = enum {
     beat,
 };
 
+const HeartbeatWorkerContext = struct {
+    runtime_state: *RuntimeState,
+    config: *const Config,
+    config_dir: []const u8,
+    shutdown: *std.atomic.Value(bool),
+};
+
 var shutdown_requested = std.atomic.Value(bool).init(false);
 
 pub fn run() !void {
@@ -89,6 +96,28 @@ pub fn run() !void {
     defer telegram.deinit();
 
     var runtime_state = RuntimeState.init();
+    var heartbeat_thread: ?std.Thread = null;
+    defer if (heartbeat_thread) |*thread| {
+        thread.join();
+    };
+
+    const heartbeat_interval_ms = heartbeatIntervalMillis(&config);
+    if (heartbeat_interval_ms) |_| {
+        runtime_state.setNextHeartbeatMillis(std.time.milliTimestamp());
+        heartbeat_thread = std.Thread.spawn(.{}, heartbeatWorkerMain, .{HeartbeatWorkerContext{
+            .runtime_state = &runtime_state,
+            .config = &config,
+            .config_dir = config_dir,
+            .shutdown = &shutdown_requested,
+        }}) catch |err| blk: {
+            std.log.err("failed to start heartbeat worker: {}", .{err});
+            runtime_state.setNextHeartbeatMillis(std.math.maxInt(i64));
+            break :blk null;
+        };
+    } else {
+        runtime_state.setNextHeartbeatMillis(std.math.maxInt(i64));
+    }
+
     var web_server: ?web.Server = null;
 
     const web_mode: web.ServeMode = if (config.web_enabled) .full else .status_only;
@@ -119,12 +148,9 @@ pub fn run() !void {
     std.log.info("zigbot started", .{});
 
     var next_update_offset: i64 = 0;
-    var next_heartbeat_ms = initialNextHeartbeatMillis(&config);
-    runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
-    triggerHeartbeatIfDue(allocator, &runtime_state, &config, config_dir, &next_heartbeat_ms);
     std.log.info("waiting for Telegram messages...", .{});
     while (!shutdown_requested.load(.acquire)) {
-        const poll_timeout_seconds = effectivePollingTimeoutSeconds(&config, next_heartbeat_ms);
+        const poll_timeout_seconds = clampNonNegative(config.polling_timeout_seconds);
         handlePollCycle(allocator, &runtime_state, &config, config_dir, &telegram, &next_update_offset, poll_timeout_seconds) catch |err| {
             if (shutdown_requested.load(.acquire)) break;
             runtime_state.recordPollError(err);
@@ -132,11 +158,10 @@ pub fn run() !void {
             if (shutdown_requested.load(.acquire)) break;
             std.Thread.sleep(2 * std.time.ns_per_s);
         };
-
-        triggerHeartbeatIfDue(allocator, &runtime_state, &config, config_dir, &next_heartbeat_ms);
     }
 
     std.log.info("shutdown requested, stopping zigbot", .{});
+    shutdown_requested.store(true, .seq_cst);
     if (web_server) |*server| {
         server.stopAndJoin();
     }
@@ -254,61 +279,47 @@ fn trimForTelegram(text: []const u8) []const u8 {
     return text[0..max_len];
 }
 
-fn initialNextHeartbeatMillis(config: *const Config) i64 {
-    _ = heartbeatIntervalMillis(config) orelse return std.math.maxInt(i64);
-    return std.time.milliTimestamp();
-}
-
-fn effectivePollingTimeoutSeconds(config: *const Config, next_heartbeat_ms: i64) i64 {
-    const poll_timeout = clampNonNegative(config.polling_timeout_seconds);
-    if (next_heartbeat_ms == std.math.maxInt(i64)) return poll_timeout;
-
-    const now_ms = std.time.milliTimestamp();
-    if (now_ms >= next_heartbeat_ms) return 0;
-
-    const remaining_ms = next_heartbeat_ms - now_ms;
-    const ms_per_second: i64 = std.time.ms_per_s;
-    const heartbeat_timeout = @divFloor(remaining_ms + ms_per_second - 1, ms_per_second);
-    return @min(poll_timeout, heartbeat_timeout);
-}
-
-fn triggerHeartbeatIfDue(
-    allocator: std.mem.Allocator,
-    runtime_state: *RuntimeState,
-    config: *const Config,
-    config_dir: []const u8,
-    next_heartbeat_ms: *i64,
-) void {
-    const interval_ms = heartbeatIntervalMillis(config) orelse return;
-    const now_ms = std.time.milliTimestamp();
-    if (now_ms < next_heartbeat_ms.*) return;
-
-    if (!runtime_state.tryBeginAgentTask(.heartbeat)) {
-        runtime_state.recordHeartbeatDeferred();
-        const snapshot = runtime_state.snapshot();
-        std.log.info(
-            "heartbeat deferred because agent is busy with task={s}",
-            .{agentTaskName(snapshot.active_task)},
-        );
-        next_heartbeat_ms.* = std.math.add(i64, now_ms, interval_ms) catch std.math.maxInt(i64);
-        runtime_state.setNextHeartbeatMillis(next_heartbeat_ms.*);
-        return;
-    }
-    defer runtime_state.finishAgentTask(.heartbeat);
-
-    std.log.info("triggering heartbeat", .{});
-    runtime_state.recordHeartbeatStarted();
-    runHeartbeat(allocator, config, config_dir) catch |err| {
-        runtime_state.recordHeartbeatError(err);
-        std.log.err("heartbeat error: {}", .{err});
-        next_heartbeat_ms.* = std.math.add(i64, now_ms, interval_ms) catch std.math.maxInt(i64);
-        runtime_state.setNextHeartbeatMillis(next_heartbeat_ms.*);
+fn heartbeatWorkerMain(context: HeartbeatWorkerContext) void {
+    const interval_ms = heartbeatIntervalMillis(context.config) orelse {
+        context.runtime_state.setNextHeartbeatMillis(std.math.maxInt(i64));
         return;
     };
-    runtime_state.recordHeartbeatSuccess();
 
-    next_heartbeat_ms.* = std.math.add(i64, now_ms, interval_ms) catch std.math.maxInt(i64);
-    runtime_state.setNextHeartbeatMillis(next_heartbeat_ms.*);
+    var next_heartbeat_ms = std.time.milliTimestamp();
+    context.runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
+
+    while (!context.shutdown.load(.acquire)) {
+        waitUntilDueOrShutdown(context.shutdown, next_heartbeat_ms);
+        if (context.shutdown.load(.acquire)) break;
+
+        std.log.info("triggering heartbeat", .{});
+        context.runtime_state.recordHeartbeatStarted();
+        runHeartbeat(std.heap.page_allocator, context.config, context.config_dir) catch |err| {
+            context.runtime_state.recordHeartbeatError(err);
+            std.log.err("heartbeat error: {}", .{err});
+            const after_run_ms = std.time.milliTimestamp();
+            next_heartbeat_ms = std.math.add(i64, after_run_ms, interval_ms) catch std.math.maxInt(i64);
+            context.runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
+            continue;
+        };
+        context.runtime_state.recordHeartbeatSuccess();
+
+        const after_run_ms = std.time.milliTimestamp();
+        next_heartbeat_ms = std.math.add(i64, after_run_ms, interval_ms) catch std.math.maxInt(i64);
+        context.runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
+    }
+}
+
+fn waitUntilDueOrShutdown(shutdown: *std.atomic.Value(bool), due_ms: i64) void {
+    while (!shutdown.load(.acquire)) {
+        const now_ms = std.time.milliTimestamp();
+        if (now_ms >= due_ms) return;
+
+        const remaining_ms = due_ms - now_ms;
+        const sleep_ms: i64 = @min(remaining_ms, 250);
+        const sleep_ns = std.math.mul(u64, @as(u64, @intCast(sleep_ms)), std.time.ns_per_ms) catch std.time.ns_per_ms;
+        std.Thread.sleep(sleep_ns);
+    }
 }
 
 fn heartbeatIntervalMillis(config: *const Config) ?i64 {
