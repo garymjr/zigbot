@@ -188,18 +188,40 @@ fn configureRequestTimeout(request: *std.http.Client.Request, timeout_seconds: i
     };
     const timeout_bytes = std.mem.asBytes(&timeout);
 
-    try std.posix.setsockopt(
+    try setSocketTimeout(
         stream.handle,
         std.posix.SOL.SOCKET,
         std.posix.SO.RCVTIMEO,
         timeout_bytes,
     );
-    try std.posix.setsockopt(
+    try setSocketTimeout(
         stream.handle,
         std.posix.SOL.SOCKET,
         std.posix.SO.SNDTIMEO,
         timeout_bytes,
     );
+}
+
+fn setSocketTimeout(
+    socket: std.posix.socket_t,
+    level: i32,
+    optname: u32,
+    opt: []const u8,
+) !void {
+    const rc = std.posix.system.setsockopt(
+        socket,
+        level,
+        optname,
+        @ptrCast(opt.ptr),
+        @intCast(opt.len),
+    );
+    switch (std.posix.errno(rc)) {
+        .SUCCESS => {},
+        // Zig 0.15.2 may treat EINVAL as unreachable in std.posix.setsockopt.
+        // Handle it safely here and treat unsupported timeout opts as no-op.
+        .INVAL, .NOPROTOOPT => {},
+        else => return error.SocketTimeoutConfigurationFailed,
+    }
 }
 
 fn markConnectionClosing(request: *std.http.Client.Request) void {

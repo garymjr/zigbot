@@ -643,6 +643,10 @@
     let controlFeedbackTimer = null;
 
     const numberFmt = new Intl.NumberFormat();
+    const costFmt = new Intl.NumberFormat(undefined, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 6,
+    });
 
     function fmtTime(ms) {
       if (!ms || ms <= 0) return "never";
@@ -706,6 +710,58 @@
         return fmtDuration(Math.ceil(remainingMs / 1000));
       }
       return `${fmtDuration(Math.ceil(remainingMs / 1000))} (${fmtRelative(expiresAtMs, status.now_ms)})`;
+    }
+
+    function fmtSessionStatsStatus(stats) {
+      const status = stats && stats.status ? stats.status : "unavailable";
+      if (status === "ok") return "ok";
+      if (status === "disabled") return "disabled";
+      if (status === "no_session") return "no shared session";
+      if (status === "busy") return "busy (try again)";
+      if (status === "error") return "error";
+      return "unavailable";
+    }
+
+    function fmtSessionStatCount(value) {
+      const num = Number(value);
+      if (!Number.isFinite(num) || num < 0) return "n/a";
+      return fmtCount(Math.floor(num));
+    }
+
+    function fmtSessionStatsMessages(stats) {
+      if (!stats || stats.status !== "ok") return "n/a";
+      return [
+        fmtSessionStatCount(stats.user_messages),
+        fmtSessionStatCount(stats.assistant_messages),
+        fmtSessionStatCount(stats.tool_calls),
+        fmtSessionStatCount(stats.tool_results),
+        fmtSessionStatCount(stats.total_messages),
+      ].join(" / ");
+    }
+
+    function fmtSessionStatsTokens(stats) {
+      if (!stats || stats.status !== "ok") return "n/a";
+      return [
+        fmtSessionStatCount(stats.input_tokens),
+        fmtSessionStatCount(stats.output_tokens),
+        fmtSessionStatCount(stats.cache_read_tokens),
+        fmtSessionStatCount(stats.cache_write_tokens),
+        fmtSessionStatCount(stats.total_tokens),
+      ].join(" / ");
+    }
+
+    function fmtSessionStatsCost(stats) {
+      if (!stats || stats.status !== "ok") return "n/a";
+      const cost = Number(stats.cost);
+      if (!Number.isFinite(cost) || cost < 0) return "n/a";
+      return costFmt.format(cost);
+    }
+
+    function fmtSessionStatsUpdated(stats, nowMs) {
+      if (!stats || stats.status !== "ok") return "n/a";
+      const capturedMs = Number(stats.captured_ms);
+      if (!Number.isFinite(capturedMs) || capturedMs <= 0) return "n/a";
+      return `${fmtTime(capturedMs)} (${fmtAgo(capturedMs, nowMs)})`;
     }
 
     async function fetchJson(url, opts) {
@@ -863,6 +919,7 @@
         const providerName = status.provider || "default";
         const modelName = status.model || "default";
         const heartbeatMode = status.heartbeat_execution_mode || "threaded";
+        const sessionStats = status.pi_session_stats || {};
 
         updatedAtEl.textContent = `Updated ${new Date(nowMs).toLocaleString()} · Uptime ${fmtDuration(status.uptime_seconds)}`;
 
@@ -905,6 +962,11 @@
           ["Telegram busy rejects", fmtCount(status.telegram_busy_reject_count)],
           ["Telegram generation errors", fmtCount(status.telegram_generation_error_count)],
           ["Telegram send errors", fmtCount(status.telegram_send_error_count)],
+          ["Session stats", fmtSessionStatsStatus(sessionStats)],
+          ["Session messages (u/a/c/r/t)", fmtSessionStatsMessages(sessionStats)],
+          ["Session tokens (i/o/cr/cw/t)", fmtSessionStatsTokens(sessionStats)],
+          ["Session cost", fmtSessionStatsCost(sessionStats)],
+          ["Session stats updated", fmtSessionStatsUpdated(sessionStats, nowMs)],
         ]);
 
         heartbeatMeterFillEl.style.width = `${healthScore}%`;

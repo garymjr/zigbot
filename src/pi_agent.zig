@@ -15,6 +15,40 @@ pub const SharedSessionStatus = struct {
     ttl_remaining_ms: ?i64,
 };
 
+pub const SharedSessionStats = struct {
+    status: []const u8 = "unavailable",
+    captured_ms: ?i64 = null,
+    user_messages: ?i64 = null,
+    assistant_messages: ?i64 = null,
+    tool_calls: ?i64 = null,
+    tool_results: ?i64 = null,
+    total_messages: ?i64 = null,
+    input_tokens: ?i64 = null,
+    output_tokens: ?i64 = null,
+    cache_read_tokens: ?i64 = null,
+    cache_write_tokens: ?i64 = null,
+    total_tokens: ?i64 = null,
+    cost: ?f64 = null,
+};
+
+const SessionStatsPayload = struct {
+    userMessages: ?i64 = null,
+    assistantMessages: ?i64 = null,
+    toolCalls: ?i64 = null,
+    toolResults: ?i64 = null,
+    totalMessages: ?i64 = null,
+    tokens: ?SessionStatsTokens = null,
+    cost: ?f64 = null,
+};
+
+const SessionStatsTokens = struct {
+    input: ?i64 = null,
+    output: ?i64 = null,
+    cacheRead: ?i64 = null,
+    cacheWrite: ?i64 = null,
+    total: ?i64 = null,
+};
+
 pub const SessionCache = struct {
     allocator: std.mem.Allocator,
     config: *const Config,
@@ -80,6 +114,45 @@ pub const SessionCache = struct {
         }
         self.disposeSharedSessionLocked();
         return had_shared_session;
+    }
+
+    pub fn sharedSessionStats(self: *SessionCache, now_ms: i64) SharedSessionStats {
+        if (!self.reuseEnabled()) {
+            return .{ .status = "disabled" };
+        }
+        if (!self.mutex.tryLock()) {
+            return .{ .status = "busy" };
+        }
+        defer self.mutex.unlock();
+
+        const session = if (self.shared_session) |*value| value else {
+            return .{ .status = "no_session" };
+        };
+        const stats_json = session.getSessionStatsJson() catch |err| {
+            log.warn("op=session stats_fetch_failed err={}", .{err});
+            return .{ .status = "error" };
+        };
+        defer self.allocator.free(stats_json);
+
+        const parsed = parseSessionStatsJson(self.allocator, stats_json) catch |err| {
+            log.warn("op=session stats_parse_failed err={}", .{err});
+            return .{ .status = "error" };
+        };
+        return .{
+            .status = "ok",
+            .captured_ms = now_ms,
+            .user_messages = parsed.userMessages,
+            .assistant_messages = parsed.assistantMessages,
+            .tool_calls = parsed.toolCalls,
+            .tool_results = parsed.toolResults,
+            .total_messages = parsed.totalMessages,
+            .input_tokens = if (parsed.tokens) |tokens| tokens.input else null,
+            .output_tokens = if (parsed.tokens) |tokens| tokens.output else null,
+            .cache_read_tokens = if (parsed.tokens) |tokens| tokens.cacheRead else null,
+            .cache_write_tokens = if (parsed.tokens) |tokens| tokens.cacheWrite else null,
+            .total_tokens = if (parsed.tokens) |tokens| tokens.total else null,
+            .cost = parsed.cost,
+        };
     }
 
     fn reuseEnabled(self: *const SessionCache) bool {
@@ -519,4 +592,63 @@ fn topLevelEventType(event_json: []const u8) ?[]const u8 {
 
 fn isJsonWhitespace(ch: u8) bool {
     return ch == ' ' or ch == '\n' or ch == '\r' or ch == '\t';
+}
+
+fn parseSessionStatsJson(allocator: std.mem.Allocator, raw_json: []const u8) !SessionStatsPayload {
+    const parsed = try std.json.parseFromSlice(SessionStatsPayload, allocator, raw_json, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+    return parsed.value;
+}
+
+test "parseSessionStatsJson parses session counters, tokens, and cost" {
+    const raw_json =
+        \\{
+        \\  "sessionFile": "/tmp/session.json",
+        \\  "sessionId": "abc123",
+        \\  "userMessages": 7,
+        \\  "assistantMessages": 6,
+        \\  "toolCalls": 2,
+        \\  "toolResults": 2,
+        \\  "totalMessages": 17,
+        \\  "tokens": {
+        \\    "input": 101,
+        \\    "output": 55,
+        \\    "cacheRead": 13,
+        \\    "cacheWrite": 9,
+        \\    "total": 178
+        \\  },
+        \\  "cost": 0.0042
+        \\}
+    ;
+
+    const parsed = try parseSessionStatsJson(std.testing.allocator, raw_json);
+    try std.testing.expectEqual(@as(?i64, 7), parsed.userMessages);
+    try std.testing.expectEqual(@as(?i64, 6), parsed.assistantMessages);
+    try std.testing.expectEqual(@as(?i64, 2), parsed.toolCalls);
+    try std.testing.expectEqual(@as(?i64, 2), parsed.toolResults);
+    try std.testing.expectEqual(@as(?i64, 17), parsed.totalMessages);
+    try std.testing.expect(parsed.tokens != null);
+    try std.testing.expectEqual(@as(?i64, 101), parsed.tokens.?.input);
+    try std.testing.expectEqual(@as(?i64, 55), parsed.tokens.?.output);
+    try std.testing.expectEqual(@as(?i64, 13), parsed.tokens.?.cacheRead);
+    try std.testing.expectEqual(@as(?i64, 9), parsed.tokens.?.cacheWrite);
+    try std.testing.expectEqual(@as(?i64, 178), parsed.tokens.?.total);
+    try std.testing.expect(parsed.cost != null);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0042), parsed.cost.?, 0.000_000_1);
+}
+
+test "parseSessionStatsJson allows partial payloads" {
+    const raw_json =
+        \\{
+        \\  "totalMessages": 3
+        \\}
+    ;
+
+    const parsed = try parseSessionStatsJson(std.testing.allocator, raw_json);
+    try std.testing.expectEqual(@as(?i64, 3), parsed.totalMessages);
+    try std.testing.expectEqual(@as(?i64, null), parsed.userMessages);
+    try std.testing.expect(parsed.tokens == null);
+    try std.testing.expectEqual(@as(?f64, null), parsed.cost);
 }

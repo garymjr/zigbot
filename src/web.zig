@@ -19,6 +19,22 @@ pub const PiSessionStatus = struct {
     ttl_remaining_ms: ?i64 = null,
 };
 
+pub const PiSessionStats = struct {
+    status: []const u8 = "unavailable",
+    captured_ms: ?i64 = null,
+    user_messages: ?i64 = null,
+    assistant_messages: ?i64 = null,
+    tool_calls: ?i64 = null,
+    tool_results: ?i64 = null,
+    total_messages: ?i64 = null,
+    input_tokens: ?i64 = null,
+    output_tokens: ?i64 = null,
+    cache_read_tokens: ?i64 = null,
+    cache_write_tokens: ?i64 = null,
+    total_tokens: ?i64 = null,
+    cost: ?f64 = null,
+};
+
 pub const TriggerHeartbeatResult = enum {
     started,
     busy,
@@ -35,6 +51,7 @@ pub const ExpireSessionResult = enum {
 pub const Controls = struct {
     context: *anyopaque,
     get_pi_session_status: *const fn (context: *anyopaque, now_ms: i64) PiSessionStatus,
+    get_pi_session_stats: *const fn (context: *anyopaque, now_ms: i64) PiSessionStats,
     trigger_heartbeat: *const fn (context: *anyopaque) TriggerHeartbeatResult,
     expire_pi_session: *const fn (context: *anyopaque) ExpireSessionResult,
 };
@@ -180,12 +197,20 @@ fn configureConnectionTimeout(stream: std.net.Stream) !void {
         .usec = 0,
     };
     const timeout_bytes = std.mem.asBytes(&timeout);
-    try std.posix.setsockopt(
+    const rc = std.posix.system.setsockopt(
         stream.handle,
         std.posix.SOL.SOCKET,
         std.posix.SO.RCVTIMEO,
-        timeout_bytes,
+        @ptrCast(timeout_bytes.ptr),
+        @intCast(timeout_bytes.len),
     );
+    switch (std.posix.errno(rc)) {
+        .SUCCESS => {},
+        // Some platforms can return EINVAL/NOPROTOOPT here. Treat this as
+        // unsupported timeout configuration instead of crashing the process.
+        .INVAL, .NOPROTOOPT => {},
+        else => return error.SocketTimeoutConfigurationFailed,
+    }
 }
 
 fn serveRequest(context: *ServerContext, request: *std.http.Server.Request) !void {
@@ -274,6 +299,10 @@ fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void
         controls.get_pi_session_status(controls.context, snapshot.captured_ms)
     else
         PiSessionStatus{};
+    const pi_session_stats = if (context.controls) |controls|
+        controls.get_pi_session_stats(controls.context, snapshot.captured_ms)
+    else
+        PiSessionStats{};
     const payload_data = .{
         .now_ms = snapshot.captured_ms,
         .started_ms = snapshot.started_ms,
@@ -287,6 +316,7 @@ fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void
         .pi_session_created_ms = pi_session_status.created_ms,
         .pi_session_expires_at_ms = pi_session_status.expires_at_ms,
         .pi_session_ttl_remaining_ms = pi_session_status.ttl_remaining_ms,
+        .pi_session_stats = pi_session_stats,
         .web_enabled = context.config.web_enabled,
         .owner_chat_restricted = context.config.owner_chat_id != null,
         .provider = context.config.provider,

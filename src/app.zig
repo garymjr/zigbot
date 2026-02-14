@@ -6,6 +6,7 @@ const askPi = @import("pi_agent.zig").askPi;
 const runHeartbeat = @import("pi_agent.zig").runHeartbeat;
 const SessionCache = @import("pi_agent.zig").SessionCache;
 const SharedSessionStatus = @import("pi_agent.zig").SharedSessionStatus;
+const SharedSessionStats = @import("pi_agent.zig").SharedSessionStats;
 const ensureSecretsExtensionInstalled = @import("secret_extension.zig").ensureInstalled;
 const RuntimeState = @import("runtime_state.zig").RuntimeState;
 const agentTaskName = @import("runtime_state.zig").agentTaskName;
@@ -152,6 +153,7 @@ pub fn run() !void {
     const web_controls = web.Controls{
         .context = @ptrCast(&web_control_context),
         .get_pi_session_status = webGetPiSessionStatus,
+        .get_pi_session_stats = webGetPiSessionStats,
         .trigger_heartbeat = webTriggerHeartbeat,
         .expire_pi_session = webExpirePiSession,
     };
@@ -215,6 +217,26 @@ fn webGetPiSessionStatus(context: *anyopaque, now_ms: i64) web.PiSessionStatus {
         .created_ms = status.created_ms,
         .expires_at_ms = status.expires_at_ms,
         .ttl_remaining_ms = status.ttl_remaining_ms,
+    };
+}
+
+fn webGetPiSessionStats(context: *anyopaque, now_ms: i64) web.PiSessionStats {
+    const control: *WebControlContext = @ptrCast(@alignCast(context));
+    const stats: SharedSessionStats = control.session_cache.sharedSessionStats(now_ms);
+    return .{
+        .status = stats.status,
+        .captured_ms = stats.captured_ms,
+        .user_messages = stats.user_messages,
+        .assistant_messages = stats.assistant_messages,
+        .tool_calls = stats.tool_calls,
+        .tool_results = stats.tool_results,
+        .total_messages = stats.total_messages,
+        .input_tokens = stats.input_tokens,
+        .output_tokens = stats.output_tokens,
+        .cache_read_tokens = stats.cache_read_tokens,
+        .cache_write_tokens = stats.cache_write_tokens,
+        .total_tokens = stats.total_tokens,
+        .cost = stats.cost,
     };
 }
 
