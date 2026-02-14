@@ -226,21 +226,41 @@ fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void
     else
         snapshot.next_heartbeat_ms;
     const uptime_seconds = @divFloor(snapshot.captured_ms - snapshot.started_ms, std.time.ms_per_s);
+    const heartbeat_enabled = context.config.heartbeat_interval_seconds > 0;
+    const last_heartbeat_duration_ms: ?i64 = if (snapshot.last_heartbeat_started_ms > 0 and
+        snapshot.last_heartbeat_finished_ms >= snapshot.last_heartbeat_started_ms)
+        snapshot.last_heartbeat_finished_ms - snapshot.last_heartbeat_started_ms
+    else
+        null;
     const payload_data = .{
         .now_ms = snapshot.captured_ms,
         .started_ms = snapshot.started_ms,
         .uptime_seconds = uptime_seconds,
+        .polling_timeout_seconds = context.config.polling_timeout_seconds,
+        .heartbeat_interval_seconds = context.config.heartbeat_interval_seconds,
+        .heartbeat_enabled = heartbeat_enabled,
+        .web_enabled = context.config.web_enabled,
+        .owner_chat_restricted = context.config.owner_chat_id != null,
+        .provider = context.config.provider,
+        .model = context.config.model,
         .next_heartbeat_ms = next_heartbeat_ms,
         .last_poll_ms = snapshot.last_poll_ms,
         .last_poll_ok = snapshot.last_poll_ok,
         .poll_error_count = snapshot.poll_error_count,
         .last_poll_error = snapshot.pollError(),
         .telegram_message_count = snapshot.telegram_message_count,
+        .telegram_busy_reject_count = snapshot.telegram_busy_reject_count,
+        .telegram_generation_error_count = snapshot.telegram_generation_error_count,
+        .telegram_send_error_count = snapshot.telegram_send_error_count,
+        .last_telegram_error = snapshot.telegramError(),
         .web_chat_count = snapshot.web_chat_count,
+        .web_chat_busy_reject_count = snapshot.web_chat_busy_reject_count,
+        .heartbeat_deferred_count = snapshot.heartbeat_deferred_count,
         .heartbeat_run_count = snapshot.heartbeat_run_count,
         .heartbeat_error_count = snapshot.heartbeat_error_count,
         .last_heartbeat_started_ms = snapshot.last_heartbeat_started_ms,
         .last_heartbeat_finished_ms = snapshot.last_heartbeat_finished_ms,
+        .last_heartbeat_duration_ms = last_heartbeat_duration_ms,
         .last_heartbeat_ok = snapshot.last_heartbeat_ok,
         .last_heartbeat_error = snapshot.heartbeatError(),
         .agent_busy = snapshot.agent_busy,
@@ -326,6 +346,7 @@ fn serveChat(context: *ServerContext, request: *std.http.Server.Request) !void {
     }
 
     if (!context.status.tryBeginAgentTask(.web_chat)) {
+        context.status.recordWebChatBusyReject();
         const snapshot = context.status.snapshot();
         const payload = try std.fmt.allocPrint(arena, "{f}", .{
             std.json.fmt(struct {

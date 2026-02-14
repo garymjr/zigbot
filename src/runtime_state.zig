@@ -23,7 +23,14 @@ pub const Snapshot = struct {
     last_poll_error_len: usize = 0,
 
     telegram_message_count: u64 = 0,
+    telegram_busy_reject_count: u64 = 0,
+    telegram_generation_error_count: u64 = 0,
+    telegram_send_error_count: u64 = 0,
+    last_telegram_error: [maxErrorTextLen]u8 = [_]u8{0} ** maxErrorTextLen,
+    last_telegram_error_len: usize = 0,
     web_chat_count: u64 = 0,
+    web_chat_busy_reject_count: u64 = 0,
+    heartbeat_deferred_count: u64 = 0,
 
     heartbeat_run_count: u64 = 0,
     heartbeat_error_count: u64 = 0,
@@ -66,6 +73,10 @@ pub const Snapshot = struct {
     pub fn webError(self: *const Snapshot) []const u8 {
         return self.last_web_error[0..self.last_web_error_len];
     }
+
+    pub fn telegramError(self: *const Snapshot) []const u8 {
+        return self.last_telegram_error[0..self.last_telegram_error_len];
+    }
 };
 
 pub const RuntimeState = struct {
@@ -81,7 +92,14 @@ pub const RuntimeState = struct {
     last_poll_error_len: usize = 0,
 
     telegram_message_count: u64 = 0,
+    telegram_busy_reject_count: u64 = 0,
+    telegram_generation_error_count: u64 = 0,
+    telegram_send_error_count: u64 = 0,
+    last_telegram_error: [maxErrorTextLen]u8 = [_]u8{0} ** maxErrorTextLen,
+    last_telegram_error_len: usize = 0,
     web_chat_count: u64 = 0,
+    web_chat_busy_reject_count: u64 = 0,
+    heartbeat_deferred_count: u64 = 0,
 
     heartbeat_run_count: u64 = 0,
     heartbeat_error_count: u64 = 0,
@@ -140,6 +158,32 @@ pub const RuntimeState = struct {
         self.telegram_message_count += 1;
     }
 
+    pub fn recordTelegramBusyReject(self: *RuntimeState) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.telegram_busy_reject_count += 1;
+    }
+
+    pub fn recordTelegramGenerationError(self: *RuntimeState, err: anyerror) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.telegram_generation_error_count += 1;
+        writeErrorName(&self.last_telegram_error, &self.last_telegram_error_len, err);
+    }
+
+    pub fn recordTelegramSendError(self: *RuntimeState, err: anyerror) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.telegram_send_error_count += 1;
+        writeErrorName(&self.last_telegram_error, &self.last_telegram_error_len, err);
+    }
+
+    pub fn clearTelegramError(self: *RuntimeState) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.last_telegram_error_len = 0;
+    }
+
     pub fn tryBeginAgentTask(self: *RuntimeState, task: AgentTask) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -185,6 +229,12 @@ pub const RuntimeState = struct {
         writeErrorName(&self.last_heartbeat_error, &self.last_heartbeat_error_len, err);
     }
 
+    pub fn recordHeartbeatDeferred(self: *RuntimeState) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.heartbeat_deferred_count += 1;
+    }
+
     pub fn recordWebChatSuccess(self: *RuntimeState, prompt: []const u8, response: []const u8, duration_ms: i64) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -209,6 +259,12 @@ pub const RuntimeState = struct {
         writeTruncated(&self.last_web_error, &self.last_web_error_len, err_text);
     }
 
+    pub fn recordWebChatBusyReject(self: *RuntimeState) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.web_chat_busy_reject_count += 1;
+    }
+
     pub fn snapshot(self: *RuntimeState) Snapshot {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -223,7 +279,14 @@ pub const RuntimeState = struct {
             .last_poll_error = self.last_poll_error,
             .last_poll_error_len = self.last_poll_error_len,
             .telegram_message_count = self.telegram_message_count,
+            .telegram_busy_reject_count = self.telegram_busy_reject_count,
+            .telegram_generation_error_count = self.telegram_generation_error_count,
+            .telegram_send_error_count = self.telegram_send_error_count,
+            .last_telegram_error = self.last_telegram_error,
+            .last_telegram_error_len = self.last_telegram_error_len,
             .web_chat_count = self.web_chat_count,
+            .web_chat_busy_reject_count = self.web_chat_busy_reject_count,
+            .heartbeat_deferred_count = self.heartbeat_deferred_count,
             .heartbeat_run_count = self.heartbeat_run_count,
             .heartbeat_error_count = self.heartbeat_error_count,
             .last_heartbeat_started_ms = self.last_heartbeat_started_ms,

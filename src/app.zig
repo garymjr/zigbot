@@ -210,8 +210,10 @@ fn handlePollCycle(
 
         std.log.info("incoming message chat_id={d}, update_id={d}", .{ message.chat.id, update.update_id });
 
+        var telegram_generation_failed = false;
         const response_text = response: {
             if (!runtime_state.tryBeginAgentTask(.telegram)) {
+                runtime_state.recordTelegramBusyReject();
                 const snapshot = runtime_state.snapshot();
                 std.log.info(
                     "telegram request skipped, agent busy with task={s}",
@@ -225,6 +227,8 @@ fn handlePollCycle(
             defer runtime_state.finishAgentTask(.telegram);
 
             break :response askPi(allocator, config, config_dir, user_text, replied_text) catch |err| blk: {
+                telegram_generation_failed = true;
+                runtime_state.recordTelegramGenerationError(err);
                 std.log.err("pi request failed: {}", .{err});
                 break :blk try allocator.dupe(
                     u8,
@@ -234,7 +238,13 @@ fn handlePollCycle(
         };
         defer allocator.free(response_text);
 
-        try telegram.sendMessage(message.chat.id, trimForTelegram(response_text));
+        telegram.sendMessage(message.chat.id, trimForTelegram(response_text)) catch |err| {
+            runtime_state.recordTelegramSendError(err);
+            return err;
+        };
+        if (!telegram_generation_failed) {
+            runtime_state.clearTelegramError();
+        }
     }
 }
 
@@ -274,6 +284,7 @@ fn triggerHeartbeatIfDue(
     if (now_ms < next_heartbeat_ms.*) return;
 
     if (!runtime_state.tryBeginAgentTask(.heartbeat)) {
+        runtime_state.recordHeartbeatDeferred();
         const snapshot = runtime_state.snapshot();
         std.log.info(
             "heartbeat deferred because agent is busy with task={s}",
