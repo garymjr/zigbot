@@ -1,4 +1,5 @@
 const std = @import("std");
+const logging = @import("logging.zig");
 const Config = @import("config.zig").Config;
 const TelegramClient = @import("telegram.zig").TelegramClient;
 const askPi = @import("pi_agent.zig").askPi;
@@ -7,6 +8,7 @@ const ensureSecretsExtensionInstalled = @import("secret_extension.zig").ensureIn
 const RuntimeState = @import("runtime_state.zig").RuntimeState;
 const agentTaskName = @import("runtime_state.zig").agentTaskName;
 const web = @import("web.zig");
+const log = std.log.scoped(.app);
 
 const RunMode = enum {
     serve,
@@ -23,6 +25,11 @@ const HeartbeatWorkerContext = struct {
 var shutdown_requested = std.atomic.Value(bool).init(false);
 
 pub fn run() !void {
+    var run_span = logging.startSpan(.app, "run");
+    var run_span_status: logging.SpanStatus = .ok;
+    errdefer run_span_status = .err;
+    defer run_span.end(run_span_status);
+
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -45,7 +52,7 @@ pub fn run() !void {
         }
 
         if (args.next() != null) {
-            std.log.err("usage: zigbot [beat] [config_path]", .{});
+            log.err("usage: zigbot [beat] [config_path]", .{});
             std.process.exit(1);
         }
     }
@@ -61,31 +68,36 @@ pub fn run() !void {
 
     var config = Config.load(allocator, config_path) catch |err| switch (err) {
         error.FileNotFound => {
-            std.log.err("config file not found: {s}", .{config_path});
+            log.err("config file not found: {s}", .{config_path});
             std.process.exit(1);
         },
         else => return err,
     };
     defer config.deinit(allocator);
 
-    std.log.info("config path: {s}", .{config_path});
-    std.log.info("agent dir: {s}", .{config_dir});
-    std.log.info("heartbeat interval (seconds): {d}", .{config.heartbeat_interval_seconds});
+    log.info("config path: {s}", .{config_path});
+    log.info("agent dir: {s}", .{config_dir});
+    log.info("heartbeat interval (seconds): {d}", .{config.heartbeat_interval_seconds});
     if (config.owner_chat_id) |owner_chat_id| {
-        std.log.info("owner chat restriction enabled for chat_id={d}", .{owner_chat_id});
+        log.info("owner chat restriction enabled for chat_id={d}", .{owner_chat_id});
     } else {
-        std.log.info("owner chat restriction disabled", .{});
+        log.info("owner chat restriction disabled", .{});
     }
 
     try ensureSecretsExtensionInstalled(allocator, config_dir);
 
     if (mode == .beat) {
-        std.log.info("running manual heartbeat", .{});
+        log.info("running manual heartbeat", .{});
+        var beat_span = logging.startSpan(.app, "manual_heartbeat");
+        var beat_span_status: logging.SpanStatus = .ok;
+        defer beat_span.end(beat_span_status);
+
         runHeartbeat(allocator, &config, config_dir) catch |err| {
-            std.log.err("manual heartbeat failed: {}", .{err});
+            beat_span_status = .err;
+            log.err("manual heartbeat failed: {}", .{err});
             return err;
         };
-        std.log.info("manual heartbeat finished", .{});
+        log.info("manual heartbeat finished", .{});
         return;
     }
 
@@ -110,7 +122,7 @@ pub fn run() !void {
             .config_dir = config_dir,
             .shutdown = &shutdown_requested,
         }}) catch |err| blk: {
-            std.log.err("failed to start heartbeat worker: {}", .{err});
+            log.err("failed to start heartbeat worker: {}", .{err});
             runtime_state.setNextHeartbeatMillis(std.math.maxInt(i64));
             break :blk null;
         };
@@ -130,9 +142,9 @@ pub fn run() !void {
             &shutdown_requested,
         ) catch |err| {
             if (config.web_enabled) {
-                std.log.err("failed starting web ui: {}", .{err});
+                log.err("failed starting web ui: {}", .{err});
             } else {
-                std.log.err("failed starting status api: {}", .{err});
+                log.err("failed starting status api: {}", .{err});
             }
             break :blk null;
         };
@@ -140,37 +152,42 @@ pub fn run() !void {
     };
 
     if (config.web_enabled) {
-        std.log.info("web ui enabled", .{});
+        log.info("web ui enabled", .{});
     } else {
-        std.log.info("web ui disabled via config, status api remains enabled", .{});
+        log.info("web ui disabled via config, status api remains enabled", .{});
     }
 
-    std.log.info("zigbot started", .{});
+    log.info("zigbot started", .{});
 
     var next_update_offset: i64 = 0;
-    std.log.info("waiting for Telegram messages...", .{});
+    log.info("waiting for Telegram messages...", .{});
     while (!shutdown_requested.load(.acquire)) {
+        var poll_cycle_span = logging.startSpanDebug(.app, "poll_cycle");
+        var poll_cycle_span_status: logging.SpanStatus = .ok;
+        defer poll_cycle_span.end(poll_cycle_span_status);
+
         const poll_timeout_seconds = clampNonNegative(config.polling_timeout_seconds);
         handlePollCycle(allocator, &runtime_state, &config, config_dir, &telegram, &next_update_offset, poll_timeout_seconds) catch |err| {
+            poll_cycle_span_status = .err;
             if (shutdown_requested.load(.acquire)) break;
             runtime_state.recordPollError(err);
-            std.log.err("poll loop error: {}", .{err});
+            log.err("poll loop error: {}", .{err});
             if (shutdown_requested.load(.acquire)) break;
             std.Thread.sleep(2 * std.time.ns_per_s);
         };
     }
 
-    std.log.info("shutdown requested, stopping zigbot", .{});
+    log.info("shutdown requested, stopping zigbot", .{});
     shutdown_requested.store(true, .seq_cst);
     if (web_server) |*server| {
         server.stopAndJoin();
     }
-    std.log.info("zigbot stopped", .{});
+    log.info("zigbot stopped", .{});
 }
 
 fn defaultConfigDir(allocator: std.mem.Allocator) ![]u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| {
-        std.log.err("failed resolving HOME for default config path: {}", .{err});
+        log.err("failed resolving HOME for default config path: {}", .{err});
         return err;
     };
     defer allocator.free(home);
@@ -206,6 +223,11 @@ fn handlePollCycle(
     next_update_offset: *i64,
     poll_timeout_seconds: i64,
 ) !void {
+    var span = logging.startSpanDebug(.app, "handlePollCycle");
+    var span_status: logging.SpanStatus = .ok;
+    errdefer span_status = .err;
+    defer span.end(span_status);
+
     var updates = try telegram.getUpdates(next_update_offset.*, poll_timeout_seconds);
     defer updates.deinit();
     runtime_state.recordPollSuccess();
@@ -218,7 +240,7 @@ fn handlePollCycle(
         const message = update.message orelse continue;
         if (config.owner_chat_id) |owner_chat_id| {
             if (message.chat.id != owner_chat_id) {
-                std.log.info(
+                log.info(
                     "ignoring message from unauthorized chat_id={d}, expected owner_chat_id={d}",
                     .{ message.chat.id, owner_chat_id },
                 );
@@ -233,14 +255,14 @@ fn handlePollCycle(
             null;
         runtime_state.recordTelegramMessage();
 
-        std.log.info("incoming message chat_id={d}, update_id={d}", .{ message.chat.id, update.update_id });
+        log.info("incoming message chat_id={d}, update_id={d}", .{ message.chat.id, update.update_id });
 
         var telegram_generation_failed = false;
         const response_text = response: {
             if (!runtime_state.tryBeginAgentTask(.telegram)) {
                 runtime_state.recordTelegramBusyReject();
                 const snapshot = runtime_state.snapshot();
-                std.log.info(
+                log.info(
                     "telegram request skipped, agent busy with task={s}",
                     .{agentTaskName(snapshot.active_task)},
                 );
@@ -254,7 +276,7 @@ fn handlePollCycle(
             break :response askPi(allocator, config, config_dir, user_text, replied_text) catch |err| blk: {
                 telegram_generation_failed = true;
                 runtime_state.recordTelegramGenerationError(err);
-                std.log.err("pi request failed: {}", .{err});
+                log.err("pi request failed: {}", .{err});
                 break :blk try allocator.dupe(
                     u8,
                     "I hit an error while generating a reply. Please try again in a moment.",
@@ -292,21 +314,28 @@ fn heartbeatWorkerMain(context: HeartbeatWorkerContext) void {
         waitUntilDueOrShutdown(context.shutdown, next_heartbeat_ms);
         if (context.shutdown.load(.acquire)) break;
 
-        std.log.info("triggering heartbeat", .{});
-        context.runtime_state.recordHeartbeatStarted();
-        runHeartbeat(std.heap.page_allocator, context.config, context.config_dir) catch |err| {
-            context.runtime_state.recordHeartbeatError(err);
-            std.log.err("heartbeat error: {}", .{err});
+        {
+            var heartbeat_span = logging.startSpan(.app, "heartbeat_cycle");
+            var heartbeat_span_status: logging.SpanStatus = .ok;
+            defer heartbeat_span.end(heartbeat_span_status);
+
+            log.info("triggering heartbeat", .{});
+            context.runtime_state.recordHeartbeatStarted();
+            runHeartbeat(std.heap.page_allocator, context.config, context.config_dir) catch |err| {
+                heartbeat_span_status = .err;
+                context.runtime_state.recordHeartbeatError(err);
+                log.err("heartbeat error: {}", .{err});
+                const after_run_ms = std.time.milliTimestamp();
+                next_heartbeat_ms = std.math.add(i64, after_run_ms, interval_ms) catch std.math.maxInt(i64);
+                context.runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
+                continue;
+            };
+            context.runtime_state.recordHeartbeatSuccess();
+
             const after_run_ms = std.time.milliTimestamp();
             next_heartbeat_ms = std.math.add(i64, after_run_ms, interval_ms) catch std.math.maxInt(i64);
             context.runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
-            continue;
-        };
-        context.runtime_state.recordHeartbeatSuccess();
-
-        const after_run_ms = std.time.milliTimestamp();
-        next_heartbeat_ms = std.math.add(i64, after_run_ms, interval_ms) catch std.math.maxInt(i64);
-        context.runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
+        }
     }
 }
 

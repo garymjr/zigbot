@@ -1,6 +1,8 @@
 const std = @import("std");
+const logging = @import("logging.zig");
 const pi = @import("pi_sdk");
 const Config = @import("config.zig").Config;
+const log = std.log.scoped(.pi_agent);
 
 const setProcessGroupAndExecScript =
     "import os,sys; os.setpgrp(); os.execvp(sys.argv[1], sys.argv[1:])";
@@ -13,7 +15,12 @@ pub fn askPi(
     prompt: []const u8,
     replied_message: ?[]const u8,
 ) ![]u8 {
-    std.log.info("askPi: creating agent session", .{});
+    var span = logging.startSpan(.pi_agent, "askPi");
+    var span_status: logging.SpanStatus = .ok;
+    errdefer span_status = .err;
+    defer span.end(span_status);
+
+    log.info("askPi: creating agent session", .{});
 
     var created = try createIsolatedAgentSession(allocator, config, config_dir);
     defer created.session.dispose();
@@ -44,6 +51,11 @@ pub fn runHeartbeat(
     config: *const Config,
     config_dir: []const u8,
 ) !void {
+    var span = logging.startSpan(.pi_agent, "runHeartbeat");
+    var span_status: logging.SpanStatus = .ok;
+    errdefer span_status = .err;
+    defer span.end(span_status);
+
     var created = try createIsolatedAgentSession(allocator, config, config_dir);
     defer created.session.dispose();
 
@@ -58,17 +70,8 @@ pub fn runHeartbeat(
     try waitForIdleWithProgress(&created.session, "heartbeat");
 
     if (try created.session.getLastAssistantText()) |text| {
-        defer allocator.free(text);
-        std.log.info("heartbeat response: {s}", .{trimForLog(text)});
-    } else {
-        std.log.info("heartbeat completed with no text response", .{});
+        allocator.free(text);
     }
-}
-
-fn trimForLog(text: []const u8) []const u8 {
-    const max_len = 280;
-    if (text.len <= max_len) return text;
-    return text[0..max_len];
 }
 
 fn createIsolatedAgentSession(
@@ -128,6 +131,11 @@ const WaitProgressState = struct {
 };
 
 fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8) !void {
+    var span = logging.startSpan(.pi_agent, label);
+    var span_status: logging.SpanStatus = .ok;
+    errdefer span_status = .err;
+    defer span.end(span_status);
+
     var state = WaitProgressState.init(label);
     session.subscribe(.{
         .callback = onWaitProgressEvent,
@@ -136,7 +144,7 @@ fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8) !void {
     defer session.unsubscribe();
 
     var logger_thread: ?std.Thread = std.Thread.spawn(.{}, waitProgressLoggerMain, .{&state}) catch |err| blk: {
-        std.log.err("{s}: failed to start progress logger thread: {}", .{ label, err });
+        log.err("{s}: failed to start progress logger thread: {}", .{ label, err });
         break :blk null;
     };
     defer {
@@ -146,9 +154,9 @@ fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8) !void {
         }
     }
 
-    std.log.info("{s}: waiting for agent completion", .{label});
+    log.info("{s}: waiting for agent completion", .{label});
     try session.waitForIdle();
-    std.log.info("{s}: agent completed", .{label});
+    log.info("{s}: agent completed", .{label});
 }
 
 fn waitProgressLoggerMain(state: *WaitProgressState) void {
@@ -163,7 +171,7 @@ fn waitProgressLoggerMain(state: *WaitProgressState) void {
         const elapsed_seconds = @divFloor(now_ms - state.started_ms, std.time.ms_per_s);
         const last_event_ms = state.last_event_ms.load(.acquire);
         const idle_seconds = @divFloor(now_ms - last_event_ms, std.time.ms_per_s);
-        std.log.info(
+        log.info(
             "{s}: still running (elapsed={d}s, since last event={d}s)",
             .{ state.label, elapsed_seconds, idle_seconds },
         );
@@ -177,15 +185,15 @@ fn onWaitProgressEvent(context: ?*anyopaque, event_json: []const u8) void {
 
     const event_type = topLevelEventType(event_json) orelse return;
     if (std.mem.eql(u8, event_type, "agent_start")) {
-        std.log.info("{s}: agent started", .{state.label});
+        log.info("{s}: agent started", .{state.label});
     } else if (std.mem.eql(u8, event_type, "toolcall_start")) {
-        std.log.info("{s}: tool call started", .{state.label});
+        log.info("{s}: tool call started", .{state.label});
     } else if (std.mem.eql(u8, event_type, "toolcall_end")) {
-        std.log.info("{s}: tool call finished", .{state.label});
+        log.info("{s}: tool call finished", .{state.label});
     } else if (std.mem.eql(u8, event_type, "agent_end")) {
-        std.log.info("{s}: agent end event received", .{state.label});
+        log.info("{s}: agent end event received", .{state.label});
     } else if (std.mem.eql(u8, event_type, "error")) {
-        std.log.err("{s}: error event received", .{state.label});
+        log.err("{s}: error event received", .{state.label});
     }
 }
 
