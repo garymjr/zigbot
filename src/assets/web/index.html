@@ -692,7 +692,7 @@
       if (status.agent_busy && status.active_task_started_ms > 0) {
         events.push({
           ms: status.active_task_started_ms,
-          title: `Agent working on ${status.active_task}`,
+          title: `Chat agent working on ${status.active_task}`,
           meta: `${fmtTime(status.active_task_started_ms)} (${fmtAgo(status.active_task_started_ms, nowMs)})`,
           kind: "warn",
         });
@@ -771,10 +771,10 @@
         const healthScore = classifyHeartbeatHealth(status);
         const totalBusyRejects =
           (Number(status.telegram_busy_reject_count) || 0) +
-          (Number(status.web_chat_busy_reject_count) || 0) +
-          (Number(status.heartbeat_deferred_count) || 0);
+          (Number(status.web_chat_busy_reject_count) || 0);
         const providerName = status.provider || "default";
         const modelName = status.model || "default";
+        const heartbeatMode = status.heartbeat_execution_mode || "threaded";
 
         updatedAtEl.textContent = `Updated ${new Date(nowMs).toLocaleString()} · Uptime ${fmtDuration(status.uptime_seconds)}`;
 
@@ -784,9 +784,10 @@
         kpiPollErrorsEl.textContent = fmtCount(status.poll_error_count);
 
         renderKv(coreStatusEl, [
-          ["Agent state", status.agent_busy ? "busy" : "idle"],
-          ["Active task", status.active_task],
-          ["Task runtime", activeFor],
+          ["Chat agent state", status.agent_busy ? "busy" : "idle"],
+          ["Chat task", status.active_task],
+          ["Chat task runtime", activeFor],
+          ["Heartbeat mode", heartbeatMode],
           ["Started", new Date(status.started_ms).toLocaleTimeString()],
           ["Heartbeat interval", status.heartbeat_enabled ? `${status.heartbeat_interval_seconds}s` : "disabled"],
           ["Poll timeout", `${status.polling_timeout_seconds}s`],
@@ -794,14 +795,14 @@
           ["Provider / model", `${providerName} / ${modelName}`],
           ["Telegram messages", fmtCount(status.telegram_message_count)],
           ["Local web requests", fmtCount(status.web_chat_count)],
-          ["Agent contention", fmtCount(totalBusyRejects)],
+          ["Chat contention", fmtCount(totalBusyRejects)],
         ]);
 
         renderKv(heartbeatStatusEl, [
+          ["Execution mode", heartbeatMode],
           ["Next run", nextHeartbeat],
           ["Total runs", fmtCount(status.heartbeat_run_count)],
           ["Error count", fmtCount(status.heartbeat_error_count)],
-          ["Deferred (agent busy)", fmtCount(status.heartbeat_deferred_count)],
           ["Last started", `${fmtTime(status.last_heartbeat_started_ms)} (${fmtAgo(status.last_heartbeat_started_ms, nowMs)})`],
           ["Last finished", `${fmtTime(status.last_heartbeat_finished_ms)} (${fmtAgo(status.last_heartbeat_finished_ms, nowMs)})`],
           ["Last duration", fmtMs(status.last_heartbeat_duration_ms)],
@@ -832,10 +833,10 @@
         setBadge(
           badgeAgentEl,
           status.agent_busy
-            ? `agent: busy (${status.active_task})`
+            ? `chat-agent: busy (${status.active_task})`
             : totalBusyRejects > 0
-              ? `agent: contention (${fmtCount(totalBusyRejects)})`
-              : "agent: idle",
+              ? `chat-agent: contention (${fmtCount(totalBusyRejects)})`
+              : "chat-agent: idle",
           status.agent_busy || totalBusyRejects > 0 ? "warn" : "ok"
         );
         setBadge(

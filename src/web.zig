@@ -237,6 +237,7 @@ fn serveStatus(context: *ServerContext, request: *std.http.Server.Request) !void
         .started_ms = snapshot.started_ms,
         .uptime_seconds = uptime_seconds,
         .polling_timeout_seconds = context.config.polling_timeout_seconds,
+        .heartbeat_execution_mode = "threaded",
         .heartbeat_interval_seconds = context.config.heartbeat_interval_seconds,
         .heartbeat_enabled = heartbeat_enabled,
         .web_enabled = context.config.web_enabled,
