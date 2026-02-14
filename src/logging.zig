@@ -2,9 +2,25 @@ const std = @import("std");
 
 var debug_logging_enabled = std.atomic.Value(bool).init(false);
 
-pub const SpanStatus = enum {
-    ok,
-    err,
+pub const execution_id_hex_len: usize = 16;
+pub const max_execution_id_len: usize = 32;
+
+threadlocal var execution_id_storage: [max_execution_id_len]u8 = undefined;
+threadlocal var execution_id_len: usize = 0;
+
+pub const ExecutionContext = struct {
+    previous_storage: [max_execution_id_len]u8 = undefined,
+    previous_len: usize,
+
+    pub fn restore(self: @This()) void {
+        if (self.previous_len > 0) {
+            @memcpy(
+                execution_id_storage[0..self.previous_len],
+                self.previous_storage[0..self.previous_len],
+            );
+        }
+        execution_id_len = self.previous_len;
+    }
 };
 
 pub fn initFromEnv(allocator: std.mem.Allocator) void {
@@ -17,6 +33,40 @@ pub fn initFromEnv(allocator: std.mem.Allocator) void {
     debug_logging_enabled.store(parseDebugFlag(value), .release);
 }
 
+pub fn generateExecutionId(buffer: *[execution_id_hex_len]u8) []const u8 {
+    var random_bytes: [execution_id_hex_len / 2]u8 = undefined;
+    std.crypto.random.bytes(&random_bytes);
+
+    const encoded = std.fmt.bytesToHex(random_bytes, .lower);
+    buffer.* = encoded;
+    return buffer[0..];
+}
+
+pub fn pushExecutionId(execution_id: []const u8) ExecutionContext {
+    var context: ExecutionContext = .{
+        .previous_len = execution_id_len,
+    };
+
+    if (execution_id_len > 0) {
+        @memcpy(
+            context.previous_storage[0..execution_id_len],
+            execution_id_storage[0..execution_id_len],
+        );
+    }
+
+    const bounded_len: usize = @min(execution_id.len, max_execution_id_len);
+    if (bounded_len > 0) {
+        @memcpy(execution_id_storage[0..bounded_len], execution_id[0..bounded_len]);
+    }
+    execution_id_len = bounded_len;
+    return context;
+}
+
+pub fn currentExecutionId() ?[]const u8 {
+    if (execution_id_len == 0) return null;
+    return execution_id_storage[0..execution_id_len];
+}
+
 pub fn logFn(
     comptime message_level: std.log.Level,
     comptime scope: @TypeOf(.enum_literal),
@@ -25,71 +75,36 @@ pub fn logFn(
 ) void {
     if (!shouldEmit(message_level)) return;
 
-    var write_buffer: [512]u8 = undefined;
+    var write_buffer: [1024]u8 = undefined;
     const stderr = std.debug.lockStderrWriter(&write_buffer);
     defer std.debug.unlockStderrWriter();
 
     var timestamp_buffer: [40]u8 = undefined;
     const timestamp = formatUtcTimestamp(std.time.milliTimestamp(), &timestamp_buffer);
+    var message_buffer: [2048]u8 = undefined;
+    const message = std.fmt.bufPrint(&message_buffer, format, args) catch "<log-format-error>";
 
-    nosuspend stderr.print(
-        "{s} [{s}] ({s}) ",
-        .{ timestamp, message_level.asText(), @tagName(scope) },
-    ) catch return;
-    nosuspend stderr.print(format, args) catch return;
-    nosuspend stderr.writeByte('\n') catch return;
-}
-
-pub fn startSpan(comptime scope: @TypeOf(.enum_literal), name: []const u8) Span(scope) {
-    const span: Span(scope) = .{
-        .name = name,
-        .started_ms = std.time.milliTimestamp(),
-        .level = .info,
-    };
-    logAtLevel(scope, span.level, "span start: {s}", .{name});
-    return span;
-}
-
-pub fn startSpanDebug(comptime scope: @TypeOf(.enum_literal), name: []const u8) Span(scope) {
-    const span: Span(scope) = .{
-        .name = name,
-        .started_ms = std.time.milliTimestamp(),
-        .level = .debug,
-    };
-    logAtLevel(scope, span.level, "span start: {s}", .{name});
-    return span;
-}
-
-pub fn Span(comptime scope: @TypeOf(.enum_literal)) type {
-    return struct {
-        name: []const u8,
-        started_ms: i64,
-        level: std.log.Level,
-
-        pub fn end(self: @This(), status: SpanStatus) void {
-            const elapsed_ms = std.time.milliTimestamp() - self.started_ms;
-            logAtLevel(
-                scope,
-                self.level,
-                "span end: {s} status={s} duration_ms={d}",
-                .{ self.name, @tagName(status), elapsed_ms },
-            );
-        }
-    };
-}
-
-fn logAtLevel(
-    comptime scope: @TypeOf(.enum_literal),
-    level: std.log.Level,
-    comptime format: []const u8,
-    args: anytype,
-) void {
-    const scoped_log = std.log.scoped(scope);
-    switch (level) {
-        .err => scoped_log.err(format, args),
-        .warn => scoped_log.warn(format, args),
-        .info => scoped_log.info(format, args),
-        .debug => scoped_log.debug(format, args),
+    if (currentExecutionId()) |execution_id| {
+        nosuspend stderr.print(
+            "time={s} level={s} scope={s} exec_id={f} msg={f}\n",
+            .{
+                timestamp,
+                levelText(message_level),
+                @tagName(scope),
+                std.json.fmt(execution_id, .{}),
+                std.json.fmt(message, .{}),
+            },
+        ) catch return;
+    } else {
+        nosuspend stderr.print(
+            "time={s} level={s} scope={s} msg={f}\n",
+            .{
+                timestamp,
+                levelText(message_level),
+                @tagName(scope),
+                std.json.fmt(message, .{}),
+            },
+        ) catch return;
     }
 }
 
@@ -99,6 +114,15 @@ fn shouldEmit(level: std.log.Level) bool {
     else
         .info;
     return @intFromEnum(level) <= @intFromEnum(max_level);
+}
+
+fn levelText(level: std.log.Level) []const u8 {
+    return switch (level) {
+        .err => "ERROR",
+        .warn => "WARN",
+        .info => "INFO",
+        .debug => "DEBUG",
+    };
 }
 
 fn parseDebugFlag(value: []const u8) bool {
