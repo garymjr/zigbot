@@ -25,11 +25,6 @@ const HeartbeatWorkerContext = struct {
 var shutdown_requested = std.atomic.Value(bool).init(false);
 
 pub fn run() !void {
-    var run_span = logging.startSpan(.app, "run");
-    var run_span_status: logging.SpanStatus = .ok;
-    errdefer run_span_status = .err;
-    defer run_span.end(run_span_status);
-
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -89,13 +84,12 @@ pub fn run() !void {
     try ensureSecretsExtensionInstalled(allocator, config_dir);
 
     if (mode == .beat) {
+        const execution_scope = pushNewExecutionId();
+        defer execution_scope.restore();
+
         log.info("running manual heartbeat", .{});
-        var beat_span = logging.startSpan(.app, "manual_heartbeat");
-        var beat_span_status: logging.SpanStatus = .ok;
-        defer beat_span.end(beat_span_status);
 
         runHeartbeat(allocator, &config, config_dir) catch |err| {
-            beat_span_status = .err;
             log.err("manual heartbeat failed: {}", .{err});
             return err;
         };
@@ -116,8 +110,10 @@ pub fn run() !void {
     };
 
     const heartbeat_interval_ms = heartbeatIntervalMillis(&config);
-    if (heartbeat_interval_ms) |_| {
-        runtime_state.setNextHeartbeatMillis(std.time.milliTimestamp());
+    if (heartbeat_interval_ms) |interval_ms| {
+        const now_ms = std.time.milliTimestamp();
+        const first_heartbeat_ms = std.math.add(i64, now_ms, interval_ms) catch std.math.maxInt(i64);
+        runtime_state.setNextHeartbeatMillis(first_heartbeat_ms);
         heartbeat_thread = std.Thread.spawn(.{}, heartbeatWorkerMain, .{HeartbeatWorkerContext{
             .runtime_state = &runtime_state,
             .config = &config,
@@ -164,13 +160,8 @@ pub fn run() !void {
     var next_update_offset: i64 = 0;
     log.info("waiting for Telegram messages...", .{});
     while (!shutdown_requested.load(.acquire)) {
-        var poll_cycle_span = logging.startSpanDebug(.app, "poll_cycle");
-        var poll_cycle_span_status: logging.SpanStatus = .ok;
-        defer poll_cycle_span.end(poll_cycle_span_status);
-
         const poll_timeout_seconds = clampNonNegative(config.polling_timeout_seconds);
         handlePollCycle(allocator, &runtime_state, &config, config_dir, &telegram, &next_update_offset, poll_timeout_seconds) catch |err| {
-            poll_cycle_span_status = .err;
             if (shutdown_requested.load(.acquire)) break;
             runtime_state.recordPollError(err);
             log.err("poll loop error: {}", .{err});
@@ -225,11 +216,6 @@ fn handlePollCycle(
     next_update_offset: *i64,
     poll_timeout_seconds: i64,
 ) !void {
-    var span = logging.startSpanDebug(.app, "handlePollCycle");
-    var span_status: logging.SpanStatus = .ok;
-    errdefer span_status = .err;
-    defer span.end(span_status);
-
     var updates = try telegram.getUpdates(next_update_offset.*, poll_timeout_seconds);
     defer updates.deinit();
     runtime_state.recordPollSuccess();
@@ -240,6 +226,9 @@ fn handlePollCycle(
         }
 
         const message = update.message orelse continue;
+        const execution_scope = pushNewExecutionId();
+        defer execution_scope.restore();
+
         if (config.owner_chat_id) |owner_chat_id| {
             if (message.chat.id != owner_chat_id) {
                 log.info(
@@ -309,7 +298,8 @@ fn heartbeatWorkerMain(context: HeartbeatWorkerContext) void {
         return;
     };
 
-    var next_heartbeat_ms = std.time.milliTimestamp();
+    const now_ms = std.time.milliTimestamp();
+    var next_heartbeat_ms = std.math.add(i64, now_ms, interval_ms) catch std.math.maxInt(i64);
     context.runtime_state.setNextHeartbeatMillis(next_heartbeat_ms);
 
     while (!context.shutdown.load(.acquire)) {
@@ -317,14 +307,12 @@ fn heartbeatWorkerMain(context: HeartbeatWorkerContext) void {
         if (context.shutdown.load(.acquire)) break;
 
         {
-            var heartbeat_span = logging.startSpan(.app, "heartbeat_cycle");
-            var heartbeat_span_status: logging.SpanStatus = .ok;
-            defer heartbeat_span.end(heartbeat_span_status);
+            const execution_scope = pushNewExecutionId();
+            defer execution_scope.restore();
 
             log.info("triggering heartbeat", .{});
             context.runtime_state.recordHeartbeatStarted();
             runHeartbeat(std.heap.page_allocator, context.config, context.config_dir) catch |err| {
-                heartbeat_span_status = .err;
                 context.runtime_state.recordHeartbeatError(err);
                 log.err("heartbeat error: {}", .{err});
                 const after_run_ms = std.time.milliTimestamp();
@@ -378,4 +366,10 @@ fn installSignalHandlers() void {
 
 fn handleShutdownSignal(_: c_int) callconv(.c) void {
     shutdown_requested.store(true, .seq_cst);
+}
+
+fn pushNewExecutionId() logging.ExecutionContext {
+    var execution_id_buffer: [logging.execution_id_hex_len]u8 = undefined;
+    const execution_id = logging.generateExecutionId(&execution_id_buffer);
+    return logging.pushExecutionId(execution_id);
 }

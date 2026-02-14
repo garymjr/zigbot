@@ -1,4 +1,5 @@
 const std = @import("std");
+const logging = @import("logging.zig");
 const Config = @import("config.zig").Config;
 const askPi = @import("pi_agent.zig").askPi;
 const RuntimeState = @import("runtime_state.zig").RuntimeState;
@@ -131,6 +132,11 @@ fn connectionMain(context: *ServerContext, connection: std.net.Server.Connection
             return;
         },
     };
+
+    var execution_id_buffer: [logging.execution_id_hex_len]u8 = undefined;
+    const execution_id = logging.generateExecutionId(&execution_id_buffer);
+    const execution_scope = logging.pushExecutionId(execution_id);
+    defer execution_scope.restore();
 
     serveRequest(context, &request) catch |err| {
         std.log.err("web service: request handling failed: {}", .{err});

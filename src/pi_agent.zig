@@ -15,11 +15,6 @@ pub fn askPi(
     prompt: []const u8,
     replied_message: ?[]const u8,
 ) ![]u8 {
-    var span = logging.startSpan(.pi_agent, "askPi");
-    var span_status: logging.SpanStatus = .ok;
-    errdefer span_status = .err;
-    defer span.end(span_status);
-
     log.info("askPi: creating agent session", .{});
 
     var created = try createIsolatedAgentSession(allocator, config, config_dir);
@@ -55,11 +50,6 @@ pub fn runHeartbeat(
     config: *const Config,
     config_dir: []const u8,
 ) !void {
-    var span = logging.startSpan(.pi_agent, "runHeartbeat");
-    var span_status: logging.SpanStatus = .ok;
-    errdefer span_status = .err;
-    defer span.end(span_status);
-
     var created = try createIsolatedAgentSession(allocator, config, config_dir);
     defer created.session.dispose();
 
@@ -126,30 +116,42 @@ const WaitProgressState = struct {
     label: []const u8,
     timeout_seconds: ?u64,
     started_ms: i64,
+    execution_id_len: usize,
+    execution_id: [logging.max_execution_id_len]u8,
     last_event_ms: std.atomic.Value(i64),
     done: std.atomic.Value(bool),
     timed_out: std.atomic.Value(bool),
 
     fn init(session: *pi.AgentSession, label: []const u8, timeout_seconds: ?u64) WaitProgressState {
         const now_ms = std.time.milliTimestamp();
-        return .{
+        var state: WaitProgressState = .{
             .session = session,
             .label = label,
             .timeout_seconds = timeout_seconds,
             .started_ms = now_ms,
+            .execution_id_len = 0,
+            .execution_id = undefined,
             .last_event_ms = std.atomic.Value(i64).init(now_ms),
             .done = std.atomic.Value(bool).init(false),
             .timed_out = std.atomic.Value(bool).init(false),
         };
+        if (logging.currentExecutionId()) |execution_id| {
+            const bounded_len: usize = @min(execution_id.len, state.execution_id.len);
+            if (bounded_len > 0) {
+                @memcpy(state.execution_id[0..bounded_len], execution_id[0..bounded_len]);
+            }
+            state.execution_id_len = bounded_len;
+        }
+        return state;
+    }
+
+    fn executionId(self: *const WaitProgressState) ?[]const u8 {
+        if (self.execution_id_len == 0) return null;
+        return self.execution_id[0..self.execution_id_len];
     }
 };
 
 fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8, timeout_seconds: ?u64) !void {
-    var span = logging.startSpan(.pi_agent, label);
-    var span_status: logging.SpanStatus = .ok;
-    errdefer span_status = .err;
-    defer span.end(span_status);
-
     var state = WaitProgressState.init(session, label, timeout_seconds);
     session.subscribe(.{
         .callback = onWaitProgressEvent,
@@ -178,6 +180,14 @@ fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8, timeout
 }
 
 fn waitProgressLoggerMain(state: *WaitProgressState) void {
+    const execution_scope = if (state.executionId()) |execution_id|
+        logging.pushExecutionId(execution_id)
+    else
+        null;
+    defer if (execution_scope) |scope| {
+        scope.restore();
+    };
+
     while (true) {
         var waited_seconds: u64 = 0;
         while (waited_seconds < waitProgressIntervalSeconds) : (waited_seconds += 1) {
@@ -227,6 +237,14 @@ fn terminateSessionProcess(session: *pi.AgentSession, label: []const u8) void {
 
 fn onWaitProgressEvent(context: ?*anyopaque, event_json: []const u8) void {
     const state = @as(*WaitProgressState, @ptrCast(@alignCast(context orelse return)));
+    const execution_scope = if (state.executionId()) |execution_id|
+        logging.pushExecutionId(execution_id)
+    else
+        null;
+    defer if (execution_scope) |scope| {
+        scope.restore();
+    };
+
     const now_ms = std.time.milliTimestamp();
     state.last_event_ms.store(now_ms, .release);
 
