@@ -82,9 +82,24 @@ pub fn logFn(
     var timestamp_buffer: [40]u8 = undefined;
     const timestamp = formatUtcTimestamp(std.time.milliTimestamp(), &timestamp_buffer);
     var message_buffer: [2048]u8 = undefined;
-    const message = std.fmt.bufPrint(&message_buffer, format, args) catch "<log-format-error>";
+    const rendered_message = std.fmt.bufPrint(&message_buffer, format, args) catch "<log-format-error>";
+    const parsed = splitOperationPrefix(rendered_message);
 
     if (currentExecutionId()) |execution_id| {
+        if (parsed.operation) |operation| {
+            nosuspend stderr.print(
+                "time={s} level={s} scope={s} exec_id={f} op={s} msg={f}\n",
+                .{
+                    timestamp,
+                    levelText(message_level),
+                    @tagName(scope),
+                    std.json.fmt(execution_id, .{}),
+                    operation,
+                    std.json.fmt(parsed.message, .{}),
+                },
+            ) catch return;
+            return;
+        }
         nosuspend stderr.print(
             "time={s} level={s} scope={s} exec_id={f} msg={f}\n",
             .{
@@ -92,20 +107,66 @@ pub fn logFn(
                 levelText(message_level),
                 @tagName(scope),
                 std.json.fmt(execution_id, .{}),
-                std.json.fmt(message, .{}),
+                std.json.fmt(parsed.message, .{}),
             },
         ) catch return;
     } else {
+        if (parsed.operation) |operation| {
+            nosuspend stderr.print(
+                "time={s} level={s} scope={s} op={s} msg={f}\n",
+                .{
+                    timestamp,
+                    levelText(message_level),
+                    @tagName(scope),
+                    operation,
+                    std.json.fmt(parsed.message, .{}),
+                },
+            ) catch return;
+            return;
+        }
         nosuspend stderr.print(
             "time={s} level={s} scope={s} msg={f}\n",
             .{
                 timestamp,
                 levelText(message_level),
                 @tagName(scope),
-                std.json.fmt(message, .{}),
+                std.json.fmt(parsed.message, .{}),
             },
         ) catch return;
     }
+}
+
+const ParsedOperationMessage = struct {
+    operation: ?[]const u8,
+    message: []const u8,
+};
+
+fn splitOperationPrefix(message: []const u8) ParsedOperationMessage {
+    if (!std.mem.startsWith(u8, message, "op=")) {
+        return .{ .operation = null, .message = message };
+    }
+
+    const op_start = "op=".len;
+    if (op_start >= message.len) {
+        return .{ .operation = null, .message = message };
+    }
+
+    var idx: usize = op_start;
+    while (idx < message.len and !isInlineWhitespace(message[idx])) : (idx += 1) {}
+    if (idx == op_start) {
+        return .{ .operation = null, .message = message };
+    }
+
+    const operation = message[op_start..idx];
+    while (idx < message.len and isInlineWhitespace(message[idx])) : (idx += 1) {}
+    return .{
+        .operation = operation,
+        .message = message[idx..],
+    };
+}
+
+fn isInlineWhitespace(ch: u8) bool {
+    return ch == ' ' or ch == '\t';
 }
 
 fn shouldEmit(level: std.log.Level) bool {

@@ -15,7 +15,7 @@ pub fn askPi(
     prompt: []const u8,
     replied_message: ?[]const u8,
 ) ![]u8 {
-    log.info("askPi: creating agent session", .{});
+    log.info("op=ask_pi create_session", .{});
 
     var created = try createIsolatedAgentSession(allocator, config, config_dir);
     defer created.session.dispose();
@@ -31,23 +31,23 @@ pub fn askPi(
     );
     defer allocator.free(contextual_prompt);
 
-    log.info("askPi: dispatching prompt (user_bytes={d}, replied_context={s})", .{
+    log.info("op=ask_pi prompt_dispatched user_bytes={d} replied_context={s}", .{
         prompt.len,
         if (replied_message != null) "yes" else "no",
     });
     try created.session.prompt(contextual_prompt, .{});
     try waitForIdleWithProgress(
         &created.session,
-        "askPi",
+        "ask_pi",
         timeoutSecondsOrDisabled(config.ask_pi_wait_timeout_seconds),
     );
 
     if (try created.session.getLastAssistantText()) |text| {
-        log.info("askPi: received assistant response (bytes={d})", .{text.len});
+        log.info("op=ask_pi response_received bytes={d}", .{text.len});
         return text;
     }
 
-    log.warn("askPi: no assistant response returned", .{});
+    log.warn("op=ask_pi no_response", .{});
     return allocator.dupe(u8, "I could not generate a response.");
 }
 
@@ -56,7 +56,7 @@ pub fn runHeartbeat(
     config: *const Config,
     config_dir: []const u8,
 ) !void {
-    log.info("heartbeat: creating agent session", .{});
+    log.info("op=heartbeat create_session", .{});
     var created = try createIsolatedAgentSession(allocator, config, config_dir);
     defer created.session.dispose();
 
@@ -67,7 +67,7 @@ pub fn runHeartbeat(
     );
     defer allocator.free(heartbeat_prompt);
 
-    log.info("heartbeat: dispatching prompt", .{});
+    log.info("op=heartbeat prompt_dispatched", .{});
     try created.session.prompt(heartbeat_prompt, .{});
     try waitForIdleWithProgress(
         &created.session,
@@ -76,10 +76,10 @@ pub fn runHeartbeat(
     );
 
     if (try created.session.getLastAssistantText()) |text| {
-        log.info("heartbeat: received assistant response (bytes={d})", .{text.len});
+        log.info("op=heartbeat response_received bytes={d}", .{text.len});
         allocator.free(text);
     } else {
-        log.warn("heartbeat: no assistant response returned", .{});
+        log.warn("op=heartbeat no_response", .{});
     }
 }
 
@@ -136,6 +136,7 @@ const WaitProgressState = struct {
     error_events: std.atomic.Value(u32),
     other_typed_events: std.atomic.Value(u32),
     untyped_events: std.atomic.Value(u32),
+    total_events: std.atomic.Value(u32),
     done: std.atomic.Value(bool),
     timed_out: std.atomic.Value(bool),
 
@@ -155,6 +156,7 @@ const WaitProgressState = struct {
             .error_events = std.atomic.Value(u32).init(0),
             .other_typed_events = std.atomic.Value(u32).init(0),
             .untyped_events = std.atomic.Value(u32).init(0),
+            .total_events = std.atomic.Value(u32).init(0),
             .done = std.atomic.Value(bool).init(false),
             .timed_out = std.atomic.Value(bool).init(false),
         };
@@ -183,7 +185,7 @@ fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8, timeout
     defer session.unsubscribe();
 
     var logger_thread: ?std.Thread = std.Thread.spawn(.{}, waitProgressLoggerMain, .{&state}) catch |err| blk: {
-        log.err("{s}: failed to start progress logger thread: {}", .{ label, err });
+        log.err("op={s} progress_logger_start_failed err={}", .{ label, err });
         break :blk null;
     };
     defer {
@@ -193,26 +195,29 @@ fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8, timeout
         }
     }
 
-    log.info("{s}: waiting for agent completion", .{label});
+    log.info("op={s} wait_start", .{label});
     session.waitForIdle() catch |err| {
         if (state.timed_out.load(.acquire)) return error.AgentWaitTimeout;
         return err;
     };
     if (state.timed_out.load(.acquire)) return error.AgentWaitTimeout;
     const elapsed_seconds = @divFloor(std.time.milliTimestamp() - state.started_ms, std.time.ms_per_s);
+    const parse_misses = state.untyped_events.load(.acquire);
     log.info(
-        "{s}: agent completed (elapsed={d}s, agent_start={d}, toolcalls_started={d}, toolcalls_finished={d}, errors={d}, other_events={d}, untyped_events={d})",
+        "op={s} completed elapsed_s={d} events={d} toolcalls_started={d} toolcalls_finished={d} errors={d} non_core_events={d}",
         .{
             label,
             elapsed_seconds,
-            state.agent_start_events.load(.acquire),
+            state.total_events.load(.acquire),
             state.toolcall_start_events.load(.acquire),
             state.toolcall_end_events.load(.acquire),
             state.error_events.load(.acquire),
             state.other_typed_events.load(.acquire),
-            state.untyped_events.load(.acquire),
         },
     );
+    if (parse_misses > 0) {
+        log.warn("op={s} event_parse_misses={d}", .{ label, parse_misses });
+    }
 }
 
 fn waitProgressLoggerMain(state: *WaitProgressState) void {
@@ -224,6 +229,7 @@ fn waitProgressLoggerMain(state: *WaitProgressState) void {
         scope.restore();
     };
 
+    var previous_total_events: u32 = 0;
     while (true) {
         var waited_seconds: u64 = 0;
         while (waited_seconds < waitProgressIntervalSeconds) : (waited_seconds += 1) {
@@ -240,7 +246,7 @@ fn waitProgressLoggerMain(state: *WaitProgressState) void {
             if (!state.timed_out.load(.acquire) and elapsed_seconds >= timeout_seconds) {
                 state.timed_out.store(true, .release);
                 log.err(
-                    "{s}: timed out after {d}s (no completion event), terminating agent process",
+                    "op={s} timeout elapsed_s={d} action=terminate_process",
                     .{ state.label, elapsed_seconds },
                 );
                 terminateSessionProcess(state.session, state.label);
@@ -248,10 +254,15 @@ fn waitProgressLoggerMain(state: *WaitProgressState) void {
             }
         }
 
-        log.info(
-            "{s}: still running (elapsed={d}s, since last event={d}s)",
-            .{ state.label, elapsed_seconds, idle_seconds },
-        );
+        const total_events = state.total_events.load(.acquire);
+        const new_events = total_events - previous_total_events;
+        previous_total_events = total_events;
+        if (idle_seconds >= waitProgressIntervalSeconds or new_events == 0) {
+            log.info(
+                "op={s} waiting elapsed_s={d} idle_s={d} events={d} new_events={d}",
+                .{ state.label, elapsed_seconds, idle_seconds, total_events, new_events },
+            );
+        }
     }
 }
 
@@ -266,7 +277,7 @@ fn terminateSessionProcess(session: *pi.AgentSession, label: []const u8) void {
             _ = session.process.wait() catch {};
         },
         else => {
-            log.err("{s}: failed to terminate timed out process: {}", .{ label, err });
+            log.err("op={s} terminate_failed err={}", .{ label, err });
         },
     };
 }
@@ -283,6 +294,7 @@ fn onWaitProgressEvent(context: ?*anyopaque, event_json: []const u8) void {
 
     const now_ms = std.time.milliTimestamp();
     state.last_event_ms.store(now_ms, .release);
+    _ = state.total_events.fetchAdd(1, .monotonic);
 
     const event_type = topLevelEventType(event_json) orelse {
         _ = state.untyped_events.fetchAdd(1, .monotonic);
@@ -290,19 +302,15 @@ fn onWaitProgressEvent(context: ?*anyopaque, event_json: []const u8) void {
     };
     if (std.mem.eql(u8, event_type, "agent_start")) {
         _ = state.agent_start_events.fetchAdd(1, .monotonic);
-        log.info("{s}: agent started", .{state.label});
     } else if (std.mem.eql(u8, event_type, "toolcall_start")) {
         _ = state.toolcall_start_events.fetchAdd(1, .monotonic);
-        log.info("{s}: tool call started", .{state.label});
     } else if (std.mem.eql(u8, event_type, "toolcall_end")) {
         _ = state.toolcall_end_events.fetchAdd(1, .monotonic);
-        log.info("{s}: tool call finished", .{state.label});
     } else if (std.mem.eql(u8, event_type, "agent_end")) {
         _ = state.other_typed_events.fetchAdd(1, .monotonic);
-        log.info("{s}: agent end event received", .{state.label});
     } else if (std.mem.eql(u8, event_type, "error")) {
-        _ = state.error_events.fetchAdd(1, .monotonic);
-        log.err("{s}: error event received", .{state.label});
+        const previous_count = state.error_events.fetchAdd(1, .monotonic);
+        log.err("op={s} agent_error_event count={d}", .{ state.label, previous_count + 1 });
     } else {
         _ = state.other_typed_events.fetchAdd(1, .monotonic);
     }
