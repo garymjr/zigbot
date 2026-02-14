@@ -104,6 +104,7 @@ fn createIsolatedAgentSession(
         .allocator = allocator,
         .pi_executable = "python3",
         .raw_spawn_args = raw_spawn_args.items,
+        .cwd = config_dir,
         .agent_dir = config_dir,
         .session_manager = pi.SessionManager.inMemory(),
     });
