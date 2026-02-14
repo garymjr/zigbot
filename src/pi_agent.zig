@@ -31,6 +31,10 @@ pub fn askPi(
     );
     defer allocator.free(contextual_prompt);
 
+    log.info("askPi: dispatching prompt (user_bytes={d}, replied_context={s})", .{
+        prompt.len,
+        if (replied_message != null) "yes" else "no",
+    });
     try created.session.prompt(contextual_prompt, .{});
     try waitForIdleWithProgress(
         &created.session,
@@ -39,9 +43,11 @@ pub fn askPi(
     );
 
     if (try created.session.getLastAssistantText()) |text| {
+        log.info("askPi: received assistant response (bytes={d})", .{text.len});
         return text;
     }
 
+    log.warn("askPi: no assistant response returned", .{});
     return allocator.dupe(u8, "I could not generate a response.");
 }
 
@@ -50,6 +56,7 @@ pub fn runHeartbeat(
     config: *const Config,
     config_dir: []const u8,
 ) !void {
+    log.info("heartbeat: creating agent session", .{});
     var created = try createIsolatedAgentSession(allocator, config, config_dir);
     defer created.session.dispose();
 
@@ -60,6 +67,7 @@ pub fn runHeartbeat(
     );
     defer allocator.free(heartbeat_prompt);
 
+    log.info("heartbeat: dispatching prompt", .{});
     try created.session.prompt(heartbeat_prompt, .{});
     try waitForIdleWithProgress(
         &created.session,
@@ -68,7 +76,10 @@ pub fn runHeartbeat(
     );
 
     if (try created.session.getLastAssistantText()) |text| {
+        log.info("heartbeat: received assistant response (bytes={d})", .{text.len});
         allocator.free(text);
+    } else {
+        log.warn("heartbeat: no assistant response returned", .{});
     }
 }
 
@@ -119,6 +130,12 @@ const WaitProgressState = struct {
     execution_id_len: usize,
     execution_id: [logging.max_execution_id_len]u8,
     last_event_ms: std.atomic.Value(i64),
+    agent_start_events: std.atomic.Value(u32),
+    toolcall_start_events: std.atomic.Value(u32),
+    toolcall_end_events: std.atomic.Value(u32),
+    error_events: std.atomic.Value(u32),
+    other_typed_events: std.atomic.Value(u32),
+    untyped_events: std.atomic.Value(u32),
     done: std.atomic.Value(bool),
     timed_out: std.atomic.Value(bool),
 
@@ -132,6 +149,12 @@ const WaitProgressState = struct {
             .execution_id_len = 0,
             .execution_id = undefined,
             .last_event_ms = std.atomic.Value(i64).init(now_ms),
+            .agent_start_events = std.atomic.Value(u32).init(0),
+            .toolcall_start_events = std.atomic.Value(u32).init(0),
+            .toolcall_end_events = std.atomic.Value(u32).init(0),
+            .error_events = std.atomic.Value(u32).init(0),
+            .other_typed_events = std.atomic.Value(u32).init(0),
+            .untyped_events = std.atomic.Value(u32).init(0),
             .done = std.atomic.Value(bool).init(false),
             .timed_out = std.atomic.Value(bool).init(false),
         };
@@ -176,7 +199,20 @@ fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8, timeout
         return err;
     };
     if (state.timed_out.load(.acquire)) return error.AgentWaitTimeout;
-    log.info("{s}: agent completed", .{label});
+    const elapsed_seconds = @divFloor(std.time.milliTimestamp() - state.started_ms, std.time.ms_per_s);
+    log.info(
+        "{s}: agent completed (elapsed={d}s, agent_start={d}, toolcalls_started={d}, toolcalls_finished={d}, errors={d}, other_events={d}, untyped_events={d})",
+        .{
+            label,
+            elapsed_seconds,
+            state.agent_start_events.load(.acquire),
+            state.toolcall_start_events.load(.acquire),
+            state.toolcall_end_events.load(.acquire),
+            state.error_events.load(.acquire),
+            state.other_typed_events.load(.acquire),
+            state.untyped_events.load(.acquire),
+        },
+    );
 }
 
 fn waitProgressLoggerMain(state: *WaitProgressState) void {
@@ -248,27 +284,57 @@ fn onWaitProgressEvent(context: ?*anyopaque, event_json: []const u8) void {
     const now_ms = std.time.milliTimestamp();
     state.last_event_ms.store(now_ms, .release);
 
-    const event_type = topLevelEventType(event_json) orelse return;
+    const event_type = topLevelEventType(event_json) orelse {
+        _ = state.untyped_events.fetchAdd(1, .monotonic);
+        return;
+    };
     if (std.mem.eql(u8, event_type, "agent_start")) {
+        _ = state.agent_start_events.fetchAdd(1, .monotonic);
         log.info("{s}: agent started", .{state.label});
     } else if (std.mem.eql(u8, event_type, "toolcall_start")) {
+        _ = state.toolcall_start_events.fetchAdd(1, .monotonic);
         log.info("{s}: tool call started", .{state.label});
     } else if (std.mem.eql(u8, event_type, "toolcall_end")) {
+        _ = state.toolcall_end_events.fetchAdd(1, .monotonic);
         log.info("{s}: tool call finished", .{state.label});
     } else if (std.mem.eql(u8, event_type, "agent_end")) {
+        _ = state.other_typed_events.fetchAdd(1, .monotonic);
         log.info("{s}: agent end event received", .{state.label});
     } else if (std.mem.eql(u8, event_type, "error")) {
+        _ = state.error_events.fetchAdd(1, .monotonic);
         log.err("{s}: error event received", .{state.label});
+    } else {
+        _ = state.other_typed_events.fetchAdd(1, .monotonic);
     }
 }
 
 fn topLevelEventType(event_json: []const u8) ?[]const u8 {
-    const marker = "\"type\":\"";
-    const type_start_idx = std.mem.indexOf(u8, event_json, marker) orelse return null;
-    const value_start = type_start_idx + marker.len;
-    if (value_start >= event_json.len) return null;
+    const key_marker = "\"type\"";
+    const key_idx = std.mem.indexOf(u8, event_json, key_marker) orelse return null;
+    var idx = key_idx + key_marker.len;
 
-    const rest = event_json[value_start..];
-    const value_end = std.mem.indexOfScalar(u8, rest, '"') orelse return null;
-    return rest[0..value_end];
+    while (idx < event_json.len and isJsonWhitespace(event_json[idx])) : (idx += 1) {}
+    if (idx >= event_json.len or event_json[idx] != ':') return null;
+    idx += 1;
+
+    while (idx < event_json.len and isJsonWhitespace(event_json[idx])) : (idx += 1) {}
+    if (idx >= event_json.len or event_json[idx] != '"') return null;
+    idx += 1;
+    const value_start = idx;
+
+    while (idx < event_json.len) {
+        const ch = event_json[idx];
+        if (ch == '\\') {
+            idx += 2;
+            continue;
+        }
+        if (ch == '"') return event_json[value_start..idx];
+        idx += 1;
+    }
+
+    return null;
+}
+
+fn isJsonWhitespace(ch: u8) bool {
+    return ch == ' ' or ch == '\n' or ch == '\r' or ch == '\t';
 }
