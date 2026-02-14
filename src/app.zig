@@ -78,6 +78,8 @@ pub fn run() !void {
     log.info("config path: {s}", .{config_path});
     log.info("agent dir: {s}", .{config_dir});
     log.info("heartbeat interval (seconds): {d}", .{config.heartbeat_interval_seconds});
+    log.info("heartbeat wait timeout (seconds): {d}", .{config.heartbeat_wait_timeout_seconds});
+    log.info("askPi wait timeout (seconds): {d}", .{config.ask_pi_wait_timeout_seconds});
     if (config.owner_chat_id) |owner_chat_id| {
         log.info("owner chat restriction enabled for chat_id={d}", .{owner_chat_id});
     } else {

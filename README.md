@@ -21,6 +21,8 @@ provider = "google"
 # Omit model to use provider defaults.
 polling_timeout_seconds = 30
 heartbeat_interval_seconds = 300
+heartbeat_wait_timeout_seconds = 300
+ask_pi_wait_timeout_seconds = 1800
 web_enabled = true
 web_host = "127.0.0.1"
 web_port = 8787
@@ -36,6 +38,8 @@ Optional fields:
 - `model` (omit to use provider defaults)
 - `polling_timeout_seconds` (defaults to `30`)
 - `heartbeat_interval_seconds` (defaults to `300`, set `0` or a negative value to disable heartbeat runs)
+- `heartbeat_wait_timeout_seconds` (defaults to `300`, set `0` or a negative value to disable heartbeat wait timeout)
+- `ask_pi_wait_timeout_seconds` (defaults to `1800`, set `0` or a negative value to disable askPi wait timeout)
 - `web_enabled` (defaults to `true`, set `false` to disable the local web UI while keeping status endpoints available)
 - `web_host` (defaults to `"127.0.0.1"`)
 - `web_port` (defaults to `8787`)

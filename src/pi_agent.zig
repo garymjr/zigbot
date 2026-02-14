@@ -37,7 +37,11 @@ pub fn askPi(
     defer allocator.free(contextual_prompt);
 
     try created.session.prompt(contextual_prompt, .{});
-    try waitForIdleWithProgress(&created.session, "askPi");
+    try waitForIdleWithProgress(
+        &created.session,
+        "askPi",
+        timeoutSecondsOrDisabled(config.ask_pi_wait_timeout_seconds),
+    );
 
     if (try created.session.getLastAssistantText()) |text| {
         return text;
@@ -67,7 +71,11 @@ pub fn runHeartbeat(
     defer allocator.free(heartbeat_prompt);
 
     try created.session.prompt(heartbeat_prompt, .{});
-    try waitForIdleWithProgress(&created.session, "heartbeat");
+    try waitForIdleWithProgress(
+        &created.session,
+        "heartbeat",
+        timeoutSecondsOrDisabled(config.heartbeat_wait_timeout_seconds),
+    );
 
     if (try created.session.getLastAssistantText()) |text| {
         allocator.free(text);
@@ -114,29 +122,35 @@ fn createIsolatedAgentSession(
 }
 
 const WaitProgressState = struct {
+    session: *pi.AgentSession,
     label: []const u8,
+    timeout_seconds: ?u64,
     started_ms: i64,
     last_event_ms: std.atomic.Value(i64),
     done: std.atomic.Value(bool),
+    timed_out: std.atomic.Value(bool),
 
-    fn init(label: []const u8) WaitProgressState {
+    fn init(session: *pi.AgentSession, label: []const u8, timeout_seconds: ?u64) WaitProgressState {
         const now_ms = std.time.milliTimestamp();
         return .{
+            .session = session,
             .label = label,
+            .timeout_seconds = timeout_seconds,
             .started_ms = now_ms,
             .last_event_ms = std.atomic.Value(i64).init(now_ms),
             .done = std.atomic.Value(bool).init(false),
+            .timed_out = std.atomic.Value(bool).init(false),
         };
     }
 };
 
-fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8) !void {
+fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8, timeout_seconds: ?u64) !void {
     var span = logging.startSpan(.pi_agent, label);
     var span_status: logging.SpanStatus = .ok;
     errdefer span_status = .err;
     defer span.end(span_status);
 
-    var state = WaitProgressState.init(label);
+    var state = WaitProgressState.init(session, label, timeout_seconds);
     session.subscribe(.{
         .callback = onWaitProgressEvent,
         .context = &state,
@@ -155,7 +169,11 @@ fn waitForIdleWithProgress(session: *pi.AgentSession, label: []const u8) !void {
     }
 
     log.info("{s}: waiting for agent completion", .{label});
-    try session.waitForIdle();
+    session.waitForIdle() catch |err| {
+        if (state.timed_out.load(.acquire)) return error.AgentWaitTimeout;
+        return err;
+    };
+    if (state.timed_out.load(.acquire)) return error.AgentWaitTimeout;
     log.info("{s}: agent completed", .{label});
 }
 
@@ -171,11 +189,40 @@ fn waitProgressLoggerMain(state: *WaitProgressState) void {
         const elapsed_seconds = @divFloor(now_ms - state.started_ms, std.time.ms_per_s);
         const last_event_ms = state.last_event_ms.load(.acquire);
         const idle_seconds = @divFloor(now_ms - last_event_ms, std.time.ms_per_s);
+
+        if (state.timeout_seconds) |timeout_seconds| {
+            if (!state.timed_out.load(.acquire) and elapsed_seconds >= timeout_seconds) {
+                state.timed_out.store(true, .release);
+                log.err(
+                    "{s}: timed out after {d}s (no completion event), terminating agent process",
+                    .{ state.label, elapsed_seconds },
+                );
+                terminateSessionProcess(state.session, state.label);
+                continue;
+            }
+        }
+
         log.info(
             "{s}: still running (elapsed={d}s, since last event={d}s)",
             .{ state.label, elapsed_seconds, idle_seconds },
         );
     }
+}
+
+fn timeoutSecondsOrDisabled(value_seconds: i64) ?u64 {
+    if (value_seconds <= 0) return null;
+    return @intCast(value_seconds);
+}
+
+fn terminateSessionProcess(session: *pi.AgentSession, label: []const u8) void {
+    _ = session.process.kill() catch |err| switch (err) {
+        error.AlreadyTerminated => {
+            _ = session.process.wait() catch {};
+        },
+        else => {
+            log.err("{s}: failed to terminate timed out process: {}", .{ label, err });
+        },
+    };
 }
 
 fn onWaitProgressEvent(context: ?*anyopaque, event_json: []const u8) void {

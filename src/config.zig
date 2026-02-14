@@ -12,6 +12,8 @@ pub const Config = struct {
     model: ?[]u8,
     polling_timeout_seconds: i64,
     heartbeat_interval_seconds: i64,
+    heartbeat_wait_timeout_seconds: i64,
+    ask_pi_wait_timeout_seconds: i64,
     web_enabled: bool,
     web_host: []u8,
     web_port: u16,
@@ -24,6 +26,8 @@ pub const Config = struct {
         model: ?[]u8 = null,
         polling_timeout_seconds: ?i64 = null,
         heartbeat_interval_seconds: ?i64 = null,
+        heartbeat_wait_timeout_seconds: ?i64 = null,
+        ask_pi_wait_timeout_seconds: ?i64 = null,
         web_enabled: ?bool = null,
         web_host: ?[]u8 = null,
         web_port: ?i64 = null,
@@ -91,6 +95,8 @@ pub const Config = struct {
 
         const polling_timeout_seconds = parsed.polling_timeout_seconds orelse 30;
         const heartbeat_interval_seconds = parsed.heartbeat_interval_seconds orelse 300;
+        const heartbeat_wait_timeout_seconds = parsed.heartbeat_wait_timeout_seconds orelse 300;
+        const ask_pi_wait_timeout_seconds = parsed.ask_pi_wait_timeout_seconds orelse 1800;
         const web_enabled = parsed.web_enabled orelse true;
 
         const web_host = if (parsed.web_host) |value| blk: {
@@ -114,6 +120,8 @@ pub const Config = struct {
             .model = model,
             .polling_timeout_seconds = polling_timeout_seconds,
             .heartbeat_interval_seconds = heartbeat_interval_seconds,
+            .heartbeat_wait_timeout_seconds = heartbeat_wait_timeout_seconds,
+            .ask_pi_wait_timeout_seconds = ask_pi_wait_timeout_seconds,
             .web_enabled = web_enabled,
             .web_host = web_host,
             .web_port = web_port,
@@ -144,6 +152,8 @@ const TargetField = enum {
     model,
     polling_timeout_seconds,
     heartbeat_interval_seconds,
+    heartbeat_wait_timeout_seconds,
+    ask_pi_wait_timeout_seconds,
     web_enabled,
     web_host,
     web_port,
@@ -176,6 +186,8 @@ const TomlParser = struct {
         model: bool = false,
         polling_timeout_seconds: bool = false,
         heartbeat_interval_seconds: bool = false,
+        heartbeat_wait_timeout_seconds: bool = false,
+        ask_pi_wait_timeout_seconds: bool = false,
         web_enabled: bool = false,
         web_host: bool = false,
         web_port: bool = false,
@@ -274,6 +286,16 @@ const TomlParser = struct {
                 if (seen.heartbeat_interval_seconds) return error.DuplicateTomlKey;
                 parsed.heartbeat_interval_seconds = try self.parseIntegerValue();
                 seen.heartbeat_interval_seconds = true;
+            },
+            .heartbeat_wait_timeout_seconds => {
+                if (seen.heartbeat_wait_timeout_seconds) return error.DuplicateTomlKey;
+                parsed.heartbeat_wait_timeout_seconds = try self.parseIntegerValue();
+                seen.heartbeat_wait_timeout_seconds = true;
+            },
+            .ask_pi_wait_timeout_seconds => {
+                if (seen.ask_pi_wait_timeout_seconds) return error.DuplicateTomlKey;
+                parsed.ask_pi_wait_timeout_seconds = try self.parseIntegerValue();
+                seen.ask_pi_wait_timeout_seconds = true;
             },
             .web_enabled => {
                 if (seen.web_enabled) return error.DuplicateTomlKey;
@@ -801,6 +823,8 @@ fn keySegmentToField(segment: []const u8) TargetField {
     if (std.mem.eql(u8, segment, "model")) return .model;
     if (std.mem.eql(u8, segment, "polling_timeout_seconds")) return .polling_timeout_seconds;
     if (std.mem.eql(u8, segment, "heartbeat_interval_seconds")) return .heartbeat_interval_seconds;
+    if (std.mem.eql(u8, segment, "heartbeat_wait_timeout_seconds")) return .heartbeat_wait_timeout_seconds;
+    if (std.mem.eql(u8, segment, "ask_pi_wait_timeout_seconds")) return .ask_pi_wait_timeout_seconds;
     if (std.mem.eql(u8, segment, "web_enabled")) return .web_enabled;
     if (std.mem.eql(u8, segment, "web_host")) return .web_host;
     if (std.mem.eql(u8, segment, "web_port")) return .web_port;
@@ -959,6 +983,8 @@ test "parseTomlConfig parses root keys and ignores unrelated TOML values" {
         \\provider = "opencode"
         \\polling_timeout_seconds = 30
         \\heartbeat_interval_seconds = 120
+        \\heartbeat_wait_timeout_seconds = 180
+        \\ask_pi_wait_timeout_seconds = 1200
         \\web_enabled = false
         \\web_host = "127.0.0.1"
         \\web_port = 8787
@@ -976,6 +1002,8 @@ test "parseTomlConfig parses root keys and ignores unrelated TOML values" {
     try std.testing.expect(parsed.model == null);
     try std.testing.expectEqual(@as(i64, 30), parsed.polling_timeout_seconds.?);
     try std.testing.expectEqual(@as(i64, 120), parsed.heartbeat_interval_seconds.?);
+    try std.testing.expectEqual(@as(i64, 180), parsed.heartbeat_wait_timeout_seconds.?);
+    try std.testing.expectEqual(@as(i64, 1200), parsed.ask_pi_wait_timeout_seconds.?);
     try std.testing.expectEqual(false, parsed.web_enabled.?);
     try std.testing.expectEqualStrings("127.0.0.1", parsed.web_host.?);
     try std.testing.expectEqual(@as(i64, 8787), parsed.web_port.?);
@@ -991,6 +1019,8 @@ test "parseTomlConfig supports [zigbot] table and escaped strings" {
         \\model = "gemini"
         \\polling_timeout_seconds = 45
         \\heartbeat_interval_seconds = 600
+        \\heartbeat_wait_timeout_seconds = 450
+        \\ask_pi_wait_timeout_seconds = 2400
         \\web_enabled = true
         \\web_host = "localhost"
         \\web_port = 9191
@@ -1006,6 +1036,8 @@ test "parseTomlConfig supports [zigbot] table and escaped strings" {
     try std.testing.expectEqualStrings("gemini", parsed.model.?);
     try std.testing.expectEqual(@as(i64, 45), parsed.polling_timeout_seconds.?);
     try std.testing.expectEqual(@as(i64, 600), parsed.heartbeat_interval_seconds.?);
+    try std.testing.expectEqual(@as(i64, 450), parsed.heartbeat_wait_timeout_seconds.?);
+    try std.testing.expectEqual(@as(i64, 2400), parsed.ask_pi_wait_timeout_seconds.?);
     try std.testing.expectEqual(true, parsed.web_enabled.?);
     try std.testing.expectEqualStrings("localhost", parsed.web_host.?);
     try std.testing.expectEqual(@as(i64, 9191), parsed.web_port.?);
